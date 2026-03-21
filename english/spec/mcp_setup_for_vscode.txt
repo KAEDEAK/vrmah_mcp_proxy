@@ -1,0 +1,178 @@
+# VRM MCP Proxy - VS Code Extension Setup Guide
+
+> **Environment check**: This document is for **VS Code extensions**.
+> Confirm your runtime before setup:
+> - Claude Code CLI -> `mcp_proxy/spec/mcp_setup_for_claude.txt`
+> - Codex CLI -> `mcp_proxy/spec/mcp_setup_for_codex.txt`
+> - VS Code extension runtime -> **this document**
+
+## Overview
+This guide explains how to use VRM Agent Host and VOICEVOX as MCP tools from VS Code extensions.
+
+`mcp_proxy/mcp_server.py` provides:
+- MCP wrapper for VRM Agent Host HTTP API
+- VOICEVOX synthesis + audio handoff to VRM Agent Host
+
+Supported MCP protocol version: `2025-11-25` (latest)
+
+## Prerequisites
+- Python 3.x installed
+- One of `python`, `python3`, or `py` available
+- `requests` installed (`pip install requests`)
+- VRM Agent Host server running
+- VS Code installed
+- MCP-capable extension installed (Claude Code extension, GitHub Copilot, etc.)
+- Optional: VOICEVOX installed and running
+
+## Setup
+
+### 0. Configure `config.json`
+
+Edit `mcp_proxy/config.json`:
+
+```json
+{
+  "version": 2.0,
+  "vrmah": {
+    "host": "http://<ip-address-vrmah>:34560",
+    "candidates": ["http://<ip-address-vrmah-candidate>:34560"]
+  },
+  "voice": {
+    "type": "voicebox",
+    "server": "http://<ip-address-voicevox>:50021",
+    "candidates": ["http://<ip-address-voicevox-candidate>:50021", "http://<ip-address-vrmah>:50021"],
+    "name": "Ouka Miko",
+    "speaker_uuid": "0693554c-338e-4790-8982-b9c6d476dc69",
+    "style_id": 43
+  }
+}
+```
+
+Fields:
+- `version`: config file version (currently `2.0`)
+- `vrmah.host`: primary VRM Agent Host URL
+- `vrmah.candidates`: fallback URL list (optional). Tried in order when the primary is unreachable. A successful candidate is promoted to primary
+- `voice.type`: currently `voicebox` only
+- `voice.server`: primary VOICEVOX server URL
+- `voice.candidates`: VOICEVOX fallback URL list (optional). Same behavior as `vrmah.candidates`
+- `voice.style_id`: default speaker ID
+
+Speaker IDs are available through `voicevox_speakers`.
+
+Note: The legacy format (`"vrmah": "http://..."` as a plain string) still works for backward compatibility, but candidates cannot be used.
+
+### 1. Create MCP server config
+
+Configuration file location depends on the extension.
+
+#### 1-A. Claude Code VS Code extension
+
+Create or edit `.mcp.json` at project root:
+
+```json
+{
+  "mcpServers": {
+    "vrm_proxy_vscode": {
+      "command": "python",
+      "args": ["mcp_proxy/mcp_server.py"]
+    }
+  }
+}
+```
+
+#### 1-B. GitHub Copilot extension
+
+Create or edit `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "vrm_proxy_vscode": {
+      "command": "python",
+      "args": ["mcp_proxy/mcp_server.py"]
+    }
+  }
+}
+```
+
+Notes:
+- Replace `python` with `python3` / `py` if needed
+- You may also use VS Code UI (`MCP: Add Server`) to create equivalent config
+
+### 2. Verify
+
+Restart VS Code (or reload window).
+MCP-compatible extensions should auto-detect the server.
+
+For Claude Code extension:
+- Check status in MCP icon or output panel
+- Tool names are prefixed (for example, `mcp__vrm_proxy_vscode__vrm_command`)
+
+## Available Tools
+
+1. **vrm_command**
+   - Send a single VRM HTTP command
+   - Main parameters: `target`, `cmd`, `params`, `method`, `timeout`, `headers`, `json_payload`, `text_payload`, `absolute_url`
+
+2. **batch_vrm_commands**
+   - Execute multiple VRM commands in sequence
+   - Parameter: `commands`
+
+3. **voicevox_speak**
+   - Synthesize speech with VOICEVOX and play via VRM Agent Host
+   - Parameters: `text` (required), `speaker_id`, `speed_scale`, `volume_scale`
+
+4. **voicevox_speakers**
+   - Fetch available speakers
+
+Notes:
+- `vrm_command` / `batch_vrm_commands` are always available
+- `voicevox_speak` / `voicevox_speakers` require a valid VOICEVOX config and reachable VOICEVOX server
+
+## Examples
+
+### Play animation
+
+```text
+vrm_command: target=animation, cmd=play, params={"id": "Idle_cute", "seamless": "y"}
+```
+
+### VOICEVOX speech
+
+```text
+voicevox_speak: text="Task completed"
+```
+
+## Troubleshooting
+
+### MCP server cannot connect
+
+1. Confirm VRM Agent Host is running:
+```bash
+curl "http://<ip-address-vrmah>:34560/?target=animation&cmd=play&id=Idle_cute"
+```
+
+2. Confirm Python script works directly:
+```bash
+python mcp_proxy/mcp_server.py
+```
+
+3. Confirm JSON syntax in config files:
+- Claude Code extension: `.mcp.json`
+- GitHub Copilot: `.vscode/mcp.json`
+
+### Tools do not appear
+
+Reload VS Code window (`Ctrl+Shift+P` -> `Developer: Reload Window`).
+
+### Change base URL
+
+Edit `vrmah.host` in `mcp_proxy/config.json`, then reload VS Code. To change fallback URLs, edit `vrmah.candidates`.
+
+## Note: Using Claude Code CLI instead
+
+If you are using Claude Code CLI rather than VS Code extension, use `mcp_proxy/spec/mcp_setup_for_claude.txt`.
+
+## Reference
+
+- Animation ID list: `animation_ids.txt`

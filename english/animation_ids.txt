@@ -1,0 +1,82 @@
+# Animation ID List
+
+## Basics
+Pose/animation command format:
+`?target=animation&cmd=play&id=animation_id&seamless=y|n`
+
+## Notes
+Animations starting with Other_ contain repeating motions, so seamless does not work for most of them. Use seamless=n as a rule.
+Example:
+`?target=animation&cmd=play&id=Other_wave_hand&seamless=n`
+
+Idle_ animations can be interpolated between poses for natural movement by specifying seamless=y. Use seamless=y as a rule.
+Example:
+`?target=animation&cmd=play&id=Idle_brave&seamless=y`
+
+Layer_ animations can be combined with the previously played Idle_ or Other_ animation.
+Layer_ animations are temporary motions with movement, so specifying seamless has no effect.
+Example:
+`?target=animation&cmd=play&id=Idle_cute&seamless=y`
+`?target=animation&cmd=play&id=Layer_nod_once`
+
+## animation_id
+
+--- Idle ---
+Idle_generic
+Idle_angry
+Idle_brave
+Idle_calm
+Idle_calm_02
+Idle_concern
+Idle_classy
+Idle_cute
+Idle_denying
+Idle_energetic
+Idle_energetic_02
+Idle_sexy
+Idle_pitiable
+Idle_stressed
+Idle_surprise
+Idle_think
+Idle_what
+Idle_boyish
+Idle_cry
+Idle_laugh
+Idle_cute_02
+Idle_angry_02
+Idle_fedup
+Idle_fedup_02
+Idle_cute_03
+Idle_cat
+Idle_pointfinger
+Idle_energetic_03
+Idle_sexy_02
+Idle_sexy_03
+
+--- Other ---
+Other_walk
+Other_run
+Other_wave_hand
+Other_wave_hands
+Other_wave_arm
+Other_what
+Other_energetic
+Other_cute
+Other_cat
+Other_point_finger
+
+--- Layer ---
+Layer_start
+Layer_look_away
+Layer_look_away_angry
+Layer_nod_once
+Layer_nod_twice
+Layer_shake_head
+Layer_swing_body
+Layer_laugh_up
+Layer_laugh_down
+Layer_shake_body
+Layer_surprise
+Layer_tilt_neck
+Layer_turn_right
+Layer_turn_left

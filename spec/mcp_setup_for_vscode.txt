@@ -1,0 +1,205 @@
+# VRM MCP Proxy - VSCode 拡張機能 設定手順
+
+> **[環境確認]** このドキュメントは **VSCode 拡張機能** 用です。
+> 作業前に自分の実行環境を確認してください:
+> - Claude Code CLI として動作中 → `mcp_proxy/spec/mcp_setup_for_claude.txt` を参照
+> - Codex CLI として動作中 → `mcp_proxy/spec/mcp_setup_for_codex.txt` を参照
+> - VSCode 拡張として動作中 → **このドキュメント**（拡張ごとに設定ファイルが異なります）
+
+## 概要
+VRM Agent Host と VOICEVOX を Model Context Protocol (MCP) ツールとして
+VSCode 拡張機能から利用できるようにするための設定手順です。
+
+`mcp_proxy/mcp_server.py` が以下の機能を提供:
+- VRM Agent Host HTTP API の MCP ラッピング
+- VOICEVOX 音声合成 + VRM Agent Host への音声転送
+
+対応MCPプロトコルバージョン: 2025-11-25 (最新)
+
+## 前提条件
+- Python 3.x がインストールされていること
+- `python` または `python3` または `py` コマンドが利用可能であること
+- requests ライブラリがインストールされていること (`pip install requests`)
+- VRM Agent Host サーバーが稼働していること
+- VSCode がインストールされていること
+- MCP 対応の VSCode 拡張機能がインストールされていること（Claude Code VSCode / GitHub Copilot など）
+- (オプション) VOICEVOX がインストール・稼働していること
+
+## 設定手順
+
+### 0. config.json の設定
+
+`mcp_proxy/config.json` を環境に合わせて編集:
+
+```json
+{
+  "version": 2.0,
+  "vrmah": {
+    "host": "http://<ip-address-vrmah>:34560",
+    "candidates": ["http://<ip-address-vrmah-candidate>:34560"]
+  },
+  "voice": {
+    "type": "voicebox",
+    "server": "http://<ip-address-voicevox>:50021",
+    "candidates": ["http://<ip-address-voicevox-candidate>:50021", "http://<ip-address-vrmah>:50021"],
+    "name": "櫻歌ミコ",
+    "speaker_uuid": "0693554c-338e-4790-8982-b9c6d476dc69",
+    "style_id": 43
+  }
+}
+```
+
+設定項目:
+- `version`: 設定ファイルのバージョン（現在 `2.0`）
+- `vrmah.host`: VRM Agent Host のプライマリ URL
+- `vrmah.candidates`: フォールバック先の URL リスト（オプション）。プライマリに接続できない場合、リスト順に試行する。成功した候補はプライマリに昇格する
+- `voice.type`: 現在は `voicebox` のみ対応
+- `voice.server`: VOICEVOX サーバーのプライマリ URL
+- `voice.candidates`: VOICEVOX のフォールバック先 URL リスト（オプション）。動作は `vrmah.candidates` と同様
+- `voice.style_id`: デフォルトで使用するスピーカーID
+
+スピーカーIDは `voicevox_speakers` ツールで確認可能。
+
+注: 旧形式（`"vrmah": "http://..."` の文字列指定）も後方互換として動作しますが、candidates は使用できません。
+
+### 1. MCPサーバー設定ファイルの作成
+
+VSCode 拡張ごとに設定ファイルが異なります。使用する拡張に合わせて設定してください。
+
+#### 1-A. Claude Code VSCode 拡張
+
+プロジェクトルートに `.mcp.json` を作成または編集:
+
+```json
+{
+  "mcpServers": {
+    "vrm_proxy_vscode": {
+      "command": "python",
+      "args": [
+        "mcp_proxy/mcp_server.py"
+      ]
+    }
+  }
+}
+```
+
+パラメータ説明:
+- `vrm_proxy_vscode`: MCPサーバー名（VSCode 拡張から参照される識別子）
+- `command`: Python 実行コマンド（環境に応じて `python`, `python3`, `py` を指定）
+- `args`: スクリプトパス
+- VRM Agent Host / VOICEVOX の接続先は `config.json` で設定
+
+#### 1-B. GitHub Copilot (VS Code MCP)
+
+プロジェクトルートに `.vscode/mcp.json` を作成または編集:
+
+```json
+{
+  "servers": {
+    "vrm_proxy_vscode": {
+      "command": "python",
+      "args": [
+        "mcp_proxy/mcp_server.py"
+      ]
+    }
+  }
+}
+```
+
+補足:
+- `command` は環境に応じて `python` / `python3` / `py` に置き換えてください。
+- VS Code の設定UI（MCP: Add Server）を使って同等設定を作成しても問題ありません。
+
+### 2. 確認
+
+VSCode を再起動（またはウィンドウをリロード）すると、MCP 対応拡張機能がサーバーを自動検出します。
+
+Claude Code VSCode 拡張の場合:
+- ステータスバーの MCP アイコンまたは出力パネルで接続状態を確認できます
+- ツール名は `mcp__vrm_proxy_vscode__vrm_command` のように接頭辞が付きます
+
+## 利用可能なツール
+
+MCPサーバー接続後、以下のツールが利用可能になります:
+
+1. **vrm_command**: 単一のVRM HTTPコマンドを送信
+   - パラメータ:
+     - `target`: VRM APIのターゲット（例: `animation`）
+     - `cmd`: コマンド名（例: `play`）
+     - `params`: 追加パラメータ（例: `{"id": "Idle_cute"}`）
+     - `method`: HTTPメソッド（デフォルト: `GET`）
+     - `timeout`: タイムアウト秒数（デフォルト: `10.0`）
+     - `headers`: HTTPヘッダー（オプション）
+     - `json_payload`: POST/PUT用JSONボディ（オプション）
+     - `text_payload`: POST/PUT用テキストボディ（オプション）
+     - `absolute_url`: ベースURLの完全上書き（上級者向け）
+
+2. **batch_vrm_commands**: 複数のVRMコマンドを順次実行
+   - パラメータ:
+     - `commands`: `vrm_command` 形式のコマンド配列
+
+3. **voicevox_speak**: VOICEVOXで音声合成しVRM Agent Hostで再生
+   - パラメータ:
+     - `text`: 読み上げるテキスト (必須)
+     - `speaker_id`: スピーカーID (省略時: `config.json` の `style_id`)
+     - `speed_scale`: 速度 (デフォルト: `1.0`)
+     - `volume_scale`: 音量 (デフォルト: `1.0`)
+
+4. **voicevox_speakers**: 利用可能なスピーカー一覧を取得
+
+補足:
+- `vrm_command` / `batch_vrm_commands` は常に利用可能です。
+- `voicevox_speak` / `voicevox_speakers` は `config.json` の VOICEVOX 設定が有効な場合のみ利用可能です。
+
+## 使用例
+
+### アニメーション再生
+
+```text
+vrm_command: target=animation, cmd=play, params={"id": "Idle_cute", "seamless": "y"}
+```
+
+### VOICEVOX 発話
+
+```text
+voicevox_speak: text="作業完了しました"
+```
+
+## トラブルシューティング
+
+### MCPサーバーが接続できない場合
+
+1. VRM Agent Hostが稼働しているか確認:
+```bash
+curl "http://<ip-address-vrmah>:34560/?target=animation&cmd=play&id=Idle_cute"
+```
+
+2. Pythonスクリプトが直接動作するか確認:
+```bash
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | python mcp_proxy/mcp_server.py
+```
+`python` が使えない環境では `python3` または `py` に置き換えてください。
+
+3. 設定ファイルの JSON 構文が正しいか確認:
+   - Claude Code VSCode 拡張: `.mcp.json`
+   - GitHub Copilot (VS Code MCP): `.vscode/mcp.json`
+
+### ツールが表示されない場合
+
+VSCode のウィンドウをリロード（Ctrl+Shift+P → "Developer: Reload Window"）してください。
+
+### ベースURLを変更したい場合
+
+`mcp_proxy/config.json` の `vrmah.host` 値を変更し、VSCode をリロードしてください。フォールバック先も変更する場合は `vrmah.candidates` を編集してください。
+
+## 補足: Claude Code CLI からの利用
+
+VSCode 拡張ではなく Claude Code CLI から利用する場合は、`mcp_proxy/spec/mcp_setup_for_claude.txt` を参照してください。
+
+```bash
+claude mcp add vrm_proxy_claude -- py mcp_proxy/mcp_server.py
+```
+
+## 参考資料
+
+- アニメーションID一覧: `animation_ids.txt`

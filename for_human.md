@@ -1,0 +1,102 @@
+## 共通の準備
+1. config.json の各サーバーと音声の設定
+2. VRM Agent Host を起動し、VRM を読み込んでおく
+3. VOICEVOX を起動しておく（音声を使う場合）
+
+
+## Windows 11 + Powershell, Claude Code CLI
+
+### 登録
+claude mcp add vrm_proxy_claude -- py mcp_proxy/mcp_server.py
+
+### 登録確認
+claude mcp list
+claude mcp get vrm_proxy_claude
+
+### 試す
+Claude Code を再起動してから:
+VRM Agent Host の MCP で挨拶してみて
+
+### 登録解除
+claude mcp remove vrm_proxy_claude
+
+### CLAUDE.md への追記
+README.md の「CLAUDE.md への追記例」を参照し、アバター連携の設定を追記
+
+
+## Windows 11 + VS Code (Claude Code 拡張)
+
+### 登録
+プロジェクトルートに .mcp.json を作成:
+
+{
+  "mcpServers": {
+    "vrm_proxy_vscode": {
+      "command": "python",
+      "args": ["mcp_proxy/mcp_server.py"]
+    }
+  }
+}
+
+python が使えない場合は py や python3 に置き換える
+
+### 確認
+VS Code のウィンドウをリロード (Ctrl+Shift+P → Developer: Reload Window)
+Claude Code 拡張の MCP 接続状態を確認
+
+### 試す
+VRM Agent Host の MCP で挨拶してみて
+
+### 登録解除
+.mcp.json から該当エントリを削除
+
+### 補足: GitHub Copilot の場合
+.mcp.json ではなく .vscode/mcp.json に作成し、キー名を servers にする:
+
+{
+  "servers": {
+    "vrm_proxy_vscode": {
+      "command": "python",
+      "args": ["mcp_proxy/mcp_server.py"]
+    }
+  }
+}
+
+
+## Windows 11 + WSL + Codex CLI
+
+### 登録
+codex mcp add vrm_proxy_codex -- python3 mcp_proxy/mcp_server.py --base-url http://<ip-address-vrmah>:34560
+
+### 登録確認
+codex mcp list
+codex mcp get vrm_proxy_codex
+
+### 試す
+VRM Agent Host の MCP で挨拶してみて
+
+### 登録解除
+codex mcp remove vrm_proxy_codex
+
+
+## MCP リソース URI とファイルの対応
+
+LLM は MCP リソース URI 経由でドキュメントを読み込みます。
+
+| MCP リソース URI | 読み込み元ファイル | 内容 |
+|---|---|---|
+| `vrm-proxy://instructions` | (mcp_server.py 内にハードコード) | ツール使用方法の短い説明 |
+| `vrm-proxy://api-spec` | `instructions.md` | API クイックリファレンス |
+| `vrm-proxy://api-spec-detailed` | `detailed_instructions.md` | API 詳細リファレンス（全コマンド） |
+
+ドキュメント内の相互参照はファイル名ではなく MCP リソース URI で記載しています。
+
+## 共通メモ
+- CLAUDE.md / Agents.md にアバター連携の推奨を記載すると自動的に使ってくれる (README.md 参照)
+- アニメーション ID は animation_ids.txt を参照
+- スピーカー一覧は voicevox_speakers ツールで確認可能
+- 詳しくは README.md を参照
+
+### 便利なキーボードショートカット (CLI)
+CTRL+C 中断
+CTRL+Z いったん抜ける。 fg $1 で戻る

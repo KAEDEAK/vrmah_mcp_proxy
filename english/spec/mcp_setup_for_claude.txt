@@ -1,0 +1,185 @@
+# VRM MCP Proxy - Claude Code CLI Setup Guide
+
+> **Environment check**: This document is for **Claude Code CLI**.
+> Confirm your runtime before setup:
+> - VS Code extension -> see `mcp_proxy/spec/mcp_setup_for_vscode.txt`
+> - Codex CLI -> see `mcp_proxy/spec/mcp_setup_for_codex.txt`
+> - Claude Code CLI -> **this document**
+
+## Overview
+This guide explains how to use VRM Agent Host and VOICEVOX as MCP tools from Claude Code CLI.
+
+`mcp_proxy/mcp_server.py` provides:
+- MCP wrapper for VRM Agent Host HTTP API
+- VOICEVOX synthesis + audio handoff to VRM Agent Host
+
+Supported MCP protocol version: `2025-11-25` (latest)
+
+## Prerequisites
+- Python 3.x installed
+- One of `python3`, `python`, or `py` available
+- `requests` installed (`pip install requests`)
+- VRM Agent Host server running
+- Claude Code installed
+- Optional: VOICEVOX installed and running
+
+## Setup
+
+### 0. Configure `config.json`
+
+Edit `mcp_proxy/config.json`:
+
+```json
+{
+  "version": 2.0,
+  "vrmah": {
+    "host": "http://<ip-address-vrmah>:34560",
+    "candidates": ["http://<ip-address-vrmah-candidate>:34560"]
+  },
+  "voice": {
+    "type": "voicebox",
+    "server": "http://<ip-address-voicevox>:50021",
+    "candidates": ["http://<ip-address-voicevox-candidate>:50021", "http://<ip-address-vrmah>:50021"],
+    "name": "Ouka Miko",
+    "speaker_uuid": "0693554c-338e-4790-8982-b9c6d476dc69",
+    "style_id": 43
+  }
+}
+```
+
+Fields:
+- `version`: config file version (currently `2.0`)
+- `vrmah.host`: primary VRM Agent Host URL
+- `vrmah.candidates`: fallback URL list (optional). Tried in order when the primary is unreachable. A successful candidate is promoted to primary
+- `voice.type`: currently `voicebox` only
+- `voice.server`: primary VOICEVOX server URL
+- `voice.candidates`: VOICEVOX fallback URL list (optional). Same behavior as `vrmah.candidates`
+- `voice.style_id`: default speaker ID
+
+Speaker IDs are available through `voicevox_speakers`.
+
+Note: The legacy format (`"vrmah": "http://..."` as a plain string) still works for backward compatibility, but candidates cannot be used.
+
+### 1. Register MCP server
+
+Run from project root:
+
+```bash
+claude mcp add vrm_proxy_claude -- py mcp_proxy/mcp_server.py
+```
+
+Notes:
+- `vrm_proxy_claude`: MCP server name
+- `-- py mcp_proxy/mcp_server.py`: subprocess command after `--`
+- Replace `py` with `python` / `python3` if needed
+- VRM Agent Host and VOICEVOX targets are read from `config.json`
+
+### 2. Verify registration
+
+```bash
+claude mcp list
+claude mcp get vrm_proxy_claude
+```
+
+### 3. Check config file
+
+Claude Code stores MCP project settings in `~/.claude.json`.
+After registration, this section is added:
+
+```json
+{
+  "mcpServers": {
+    "vrm_proxy_claude": {
+      "type": "stdio",
+      "command": "py",
+      "args": [
+        "mcp_proxy/mcp_server.py"
+      ],
+      "env": {}
+    }
+  }
+}
+```
+
+## Usage
+
+### Restart Claude Code session
+
+After registering the MCP server, restart the Claude Code session.
+Then the following tools become available:
+
+1. **vrm_command**: send one VRM HTTP command
+   - `target`, `cmd`, `params`, `method`, `timeout`, `headers`, `json_payload`, `text_payload`, `absolute_url`
+
+2. **batch_vrm_commands**: run multiple VRM commands sequentially
+   - `commands`: array in `vrm_command` format
+
+3. **voicevox_speak**: synthesize speech in VOICEVOX and play in VRM Agent Host
+   - `text` (required), `speaker_id`, `speed_scale`, `volume_scale`
+
+4. **voicevox_speakers**: list available speakers
+
+## Examples
+
+### Play animation
+
+```text
+vrm_command: target=animation, cmd=play, params={"id": "Idle_cute", "seamless": "y"}
+```
+
+### VOICEVOX speech
+
+```text
+voicevox_speak: text="Task completed"
+```
+
+## Troubleshooting
+
+### MCP server cannot connect
+
+1. Check VRM Agent Host:
+```bash
+curl "http://<ip-address-vrmah>:34560/?target=animation&cmd=play&id=Idle_cute"
+```
+
+2. Check Python script directly:
+```bash
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | py mcp_proxy/mcp_server.py
+```
+
+3. Re-register MCP server:
+```bash
+claude mcp remove vrm_proxy_claude
+claude mcp add vrm_proxy_claude -- py mcp_proxy/mcp_server.py
+```
+
+### Tools do not appear
+
+Completely restart Claude Code. Existing sessions may not load newly added MCP servers.
+
+### Change base URL
+
+Edit `vrmah.host` in `mcp_proxy/config.json`, then restart Claude Code. To change fallback URLs, edit `vrmah.candidates`.
+
+## Claude Code MCP Command Reference
+
+```bash
+# List MCP servers
+claude mcp list
+
+# Add MCP server (stdio)
+claude mcp add <name> -- <command> [args...]
+
+# Add MCP server (HTTP)
+claude mcp add -t http <name> <url>
+
+# Show MCP server details
+claude mcp get <name>
+
+# Remove MCP server
+claude mcp remove <name>
+```
+
+## Reference
+
+- Animation IDs: `animation_ids.txt`

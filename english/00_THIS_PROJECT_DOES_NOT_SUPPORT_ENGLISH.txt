@@ -1,0 +1,21 @@
+This project uses the Japanese speech synthesis engine VOICEVOX.
+
+Therefore, the language used by the agent for speech is limited to Japanese.
+
+For this reason, English is not supported.
+
+Support for English may be possible by changing the speech synthesis engine.
+
+In addition, the lip-sync system for the VRM component is optimized for Japanese vowels and does not support other languages.
+
+
+To use this in an English environment, the following options are available:
+
+(1) Use a speech synthesis engine other than VOICEVOX.
+
+(2) In the English version of README.md, give up on English at the following section and use Japanese instead.
+(For the content of the speech, refer to the Japanese version of README.md.)
+Avatar Communication (MCP)
+
+(3) Produce English pronunciation using Japanese phonetics.
+There are precedents, but it is said to be difficult.
