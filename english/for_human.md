@@ -24,13 +24,13 @@ See the "Example addition to CLAUDE.md" section in `README.md` and add avatar-in
 
 ## Windows 11 + VS Code (Claude Code extension)
 
-### Register
+### Register (basic)
 Create `.mcp.json` in the project root:
 
 ```json
 {
   "mcpServers": {
-    "vrm_proxy_vscode": {
+    "vrm_proxy": {
       "command": "python",
       "args": ["mcp_proxy/mcp_server.py"]
     }
@@ -39,6 +39,34 @@ Create `.mcp.json` in the project root:
 ```
 
 If `python` is unavailable, replace it with `py` or `python3`.
+
+### Register (separate config per agent)
+Use the `--config` option to specify a different config file.
+Useful when you want different connection targets or voices per agent:
+
+```json
+{
+  "mcpServers": {
+    "vrm_proxy_for_claude": {
+      "command": "python",
+      "args": ["mcp_proxy/mcp_server.py"]
+    },
+    "vrm_proxy_for_codex": {
+      "command": "python",
+      "args": [
+        "mcp_proxy/mcp_server.py",
+        "--config", "config_for_codex.json"
+      ]
+    }
+  }
+}
+```
+
+Since server names differ, tool name prefixes also change:
+- `mcp__vrm_proxy_for_claude__voicevox_speak`
+- `mcp__vrm_proxy_for_codex__voicevox_speak`
+
+Update ToolSearch queries in CLAUDE.md or CODEX.md to match the corresponding prefix.
 
 ### Verify
 Reload the VS Code window (`Ctrl+Shift+P` -> `Developer: Reload Window`).
@@ -56,7 +84,7 @@ Use `.vscode/mcp.json` instead of `.mcp.json`, and use the key `servers`:
 ```json
 {
   "servers": {
-    "vrm_proxy_vscode": {
+    "vrm_proxy": {
       "command": "python",
       "args": ["mcp_proxy/mcp_server.py"]
     }

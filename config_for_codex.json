@@ -1,0 +1,20 @@
+{
+  "version":2.0,
+  "vrmah": {
+    "host":"http://<ip-address-vrmah>:34562", 
+    "candidates":["http://<ip-address-vrmah-candidate>:34562"]
+  },
+  "voice": {
+    "type": "voicebox",
+    "server": "http://<ip-address-voicevox>:50021",
+    "candidates":["http://<ip-address-voicevox-candidate>:50021","http://<ip-address-vrmah>:50021"],
+    "name": "WhiteCUL",
+    "speaker_uuid": "67d5d8da-acd7-4207-bb10-b5542d3a663b",
+    "style_id": 23,
+    "related":{
+      "engine":"https://github.com/VOICEVOX/voicevox_engine",
+      "website":"https://voicevox.hiroshiba.jp/product/white_cul/",
+      "license":"https://voicevox.hiroshiba.jp/product/white_cul/"
+    }
+  }
+}

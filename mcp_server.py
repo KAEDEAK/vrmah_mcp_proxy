@@ -65,10 +65,10 @@ INSTRUCTION_TEXT = (
 )
 
 
-def _load_config() -> Dict[str, Any]:
-    """Load configuration from config.json in the same directory."""
+def _load_config(config_file: str = "config.json") -> Dict[str, Any]:
+    """Load configuration from a JSON file in the same directory."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = os.path.join(script_dir, "config.json")
+    config_path = os.path.join(script_dir, config_file)
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -1181,6 +1181,11 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("VRM_MCP_PROXY_LOG", "INFO"),
         help="Logging level (DEBUG, INFO, ...)",
     )
+    parser.add_argument(
+        "--config",
+        default=os.environ.get("VRM_MCP_CONFIG", "config.json"),
+        help="Config filename in the mcp_proxy directory (default: config.json)",
+    )
     return parser.parse_args()
 
 
@@ -1193,8 +1198,9 @@ def main() -> None:
         stream=sys.stderr,
     )
 
-    # Load config.json
-    config = _load_config()
+    # Load config
+    config = _load_config(args.config)
+    logging.info("Config file: %s", args.config)
 
     base_url, vrmah_candidates = _resolve_vrmah_endpoints(config)
     logging.info("VRM Agent Host URL: %s", base_url)

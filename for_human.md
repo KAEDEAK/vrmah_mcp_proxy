@@ -26,19 +26,49 @@ README.md の「CLAUDE.md への追記例」を参照し、アバター連携の
 
 ## Windows 11 + VS Code (Claude Code 拡張)
 
-### 登録
+### 登録（基本）
 プロジェクトルートに .mcp.json を作成:
 
+```json
 {
   "mcpServers": {
-    "vrm_proxy_vscode": {
+    "vrm_proxy": {
       "command": "python",
       "args": ["mcp_proxy/mcp_server.py"]
     }
   }
 }
+```
 
 python が使えない場合は py や python3 に置き換える
+
+### 登録（エージェントごとに config を分ける場合）
+`--config` オプションで別の設定ファイルを指定できる。
+接続先や音声をエージェントごとに分けたい場合に使用:
+
+```json
+{
+  "mcpServers": {
+    "vrm_proxy_for_claude": {
+      "command": "python",
+      "args": ["mcp_proxy/mcp_server.py"]
+    },
+    "vrm_proxy_for_codex": {
+      "command": "python",
+      "args": [
+        "mcp_proxy/mcp_server.py",
+        "--config", "config_for_codex.json"
+      ]
+    }
+  }
+}
+```
+
+サーバー名が異なるため、ツール名のプレフィックスも変わる:
+- `mcp__vrm_proxy_for_claude__voicevox_speak`
+- `mcp__vrm_proxy_for_codex__voicevox_speak`
+
+CLAUDE.md や CODEX.md の ToolSearch クエリも対応するプレフィックスに合わせること。
 
 ### 確認
 VS Code のウィンドウをリロード (Ctrl+Shift+P → Developer: Reload Window)
@@ -53,14 +83,16 @@ VRM Agent Host の MCP で挨拶してみて
 ### 補足: GitHub Copilot の場合
 .mcp.json ではなく .vscode/mcp.json に作成し、キー名を servers にする:
 
+```json
 {
   "servers": {
-    "vrm_proxy_vscode": {
+    "vrm_proxy": {
       "command": "python",
       "args": ["mcp_proxy/mcp_server.py"]
     }
   }
 }
+```
 
 
 ## Windows 11 + WSL + Codex CLI
