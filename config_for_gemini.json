@@ -1,0 +1,20 @@
+{
+  "version":2.0,
+  "vrmah": {
+    "host":"http://<ip-address-vrmah>:34564", 
+    "candidates":["http://<ip-address-vrmah>:34560","http://<ip-address-vrmah-candidate>:34564"]
+  },
+  "voice": {
+    "type": "voicebox",
+    "server": "http://<ip-address-voicevox>:50021",
+    "candidates":["http://<ip-address-voicevox-candidate>:50021"],
+    "name": "小夜/SAYO",
+    "speaker_uuid": "a8cc6d22-aad0-4ab8-bf1e-2f843924164a",
+    "style_id": 46,
+    "related":{
+      "engine":"https://github.com/VOICEVOX/voicevox_engine",
+      "website":"https://voicevox.hiroshiba.jp/product/sayo/",
+      "license":"https://voicevox.hiroshiba.jp/product/sayo/"
+    }
+  }
+}
