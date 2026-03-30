@@ -2,14 +2,14 @@
 
 > **Environment check**: This document is for **Claude Code CLI**.
 > Confirm your runtime before setup:
-> - VS Code extension -> see `mcp_proxy/spec/mcp_setup_for_vscode.txt`
-> - Codex CLI -> see `mcp_proxy/spec/mcp_setup_for_codex.txt`
+> - VS Code extension -> see `vrmah_mcp_proxy/spec/mcp_setup_for_vscode.txt`
+> - Codex CLI -> see `vrmah_mcp_proxy/spec/mcp_setup_for_codex.txt`
 > - Claude Code CLI -> **this document**
 
 ## Overview
 This guide explains how to use VRM Agent Host and VOICEVOX as MCP tools from Claude Code CLI.
 
-`mcp_proxy/mcp_server.py` provides:
+`vrmah_mcp_proxy/vrmah_mcp_proxy.py` provides:
 - MCP wrapper for VRM Agent Host HTTP API
 - VOICEVOX synthesis + audio handoff to VRM Agent Host
 
@@ -27,7 +27,7 @@ Supported MCP protocol version: `2025-11-25` (latest)
 
 ### 0. Configure `config.json`
 
-Edit `mcp_proxy/config.json`:
+Edit `vrmah_mcp_proxy/config.json`:
 
 ```json
 {
@@ -65,12 +65,12 @@ Note: The legacy format (`"vrmah": "http://..."` as a plain string) still works 
 Run from project root:
 
 ```bash
-claude mcp add vrm_proxy_claude -- py mcp_proxy/mcp_server.py
+claude mcp add vrm_proxy_claude -- py vrmah_mcp_proxy/vrmah_mcp_proxy.py
 ```
 
 Notes:
 - `vrm_proxy_claude`: MCP server name
-- `-- py mcp_proxy/mcp_server.py`: subprocess command after `--`
+- `-- py vrmah_mcp_proxy/vrmah_mcp_proxy.py`: subprocess command after `--`
 - Replace `py` with `python` / `python3` if needed
 - VRM Agent Host and VOICEVOX targets are read from `config.json`
 
@@ -93,7 +93,7 @@ After registration, this section is added:
       "type": "stdio",
       "command": "py",
       "args": [
-        "mcp_proxy/mcp_server.py"
+        "vrmah_mcp_proxy/vrmah_mcp_proxy.py"
       ],
       "env": {}
     }
@@ -144,13 +144,13 @@ curl "http://<ip-address-vrmah>:34560/?target=animation&cmd=play&id=Idle_cute"
 
 2. Check Python script directly:
 ```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | py mcp_proxy/mcp_server.py
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | py vrmah_mcp_proxy/vrmah_mcp_proxy.py
 ```
 
 3. Re-register MCP server:
 ```bash
 claude mcp remove vrm_proxy_claude
-claude mcp add vrm_proxy_claude -- py mcp_proxy/mcp_server.py
+claude mcp add vrm_proxy_claude -- py vrmah_mcp_proxy/vrmah_mcp_proxy.py
 ```
 
 ### Tools do not appear
@@ -159,7 +159,7 @@ Completely restart Claude Code. Existing sessions may not load newly added MCP s
 
 ### Change base URL
 
-Edit `vrmah.host` in `mcp_proxy/config.json`, then restart Claude Code. To change fallback URLs, edit `vrmah.candidates`.
+Edit `vrmah.host` in `vrmah_mcp_proxy/config.json`, then restart Claude Code. To change fallback URLs, edit `vrmah.candidates`.
 
 ## Claude Code MCP Command Reference
 

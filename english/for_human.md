@@ -6,7 +6,7 @@
 ## Windows 11 + PowerShell, Claude Code CLI
 
 ### Register
-`claude mcp add vrm_proxy_claude -- py mcp_proxy/mcp_server.py`
+`claude mcp add vrm_proxy_claude -- py vrmah_mcp_proxy/vrmah_mcp_proxy.py`
 
 ### Verify registration
 `claude mcp list`
@@ -32,7 +32,7 @@ Create `.mcp.json` in the project root:
   "mcpServers": {
     "vrm_proxy": {
       "command": "python",
-      "args": ["mcp_proxy/mcp_server.py"]
+      "args": ["vrmah_mcp_proxy/vrmah_mcp_proxy.py"]
     }
   }
 }
@@ -49,12 +49,12 @@ Useful when you want different connection targets or voices per agent:
   "mcpServers": {
     "vrm_proxy_for_claude": {
       "command": "python",
-      "args": ["mcp_proxy/mcp_server.py"]
+      "args": ["vrmah_mcp_proxy/vrmah_mcp_proxy.py"]
     },
     "vrm_proxy_for_codex": {
       "command": "python",
       "args": [
-        "mcp_proxy/mcp_server.py",
+        "vrmah_mcp_proxy/vrmah_mcp_proxy.py",
         "--config", "config_for_codex.json"
       ]
     }
@@ -86,7 +86,7 @@ Use `.vscode/mcp.json` instead of `.mcp.json`, and use the key `servers`:
   "servers": {
     "vrm_proxy": {
       "command": "python",
-      "args": ["mcp_proxy/mcp_server.py"]
+      "args": ["vrmah_mcp_proxy/vrmah_mcp_proxy.py"]
     }
   }
 }
@@ -95,7 +95,7 @@ Use `.vscode/mcp.json` instead of `.mcp.json`, and use the key `servers`:
 ## Windows 11 + WSL + Codex CLI
 
 ### Register
-`codex mcp add vrm_proxy_codex -- python3 mcp_proxy/mcp_server.py --base-url http://<ip-address-vrmah>:34560`
+`codex mcp add vrm_proxy_codex -- python3 vrmah_mcp_proxy/vrmah_mcp_proxy.py --base-url http://<ip-address-vrmah>:34560`
 
 ### Verify registration
 `codex mcp list`
@@ -113,7 +113,7 @@ LLMs read documentation via MCP resource URIs.
 
 | MCP Resource URI | Source File | Content |
 |---|---|---|
-| `vrm-proxy://instructions` | (hardcoded in mcp_server.py) | Brief tool usage description |
+| `vrm-proxy://instructions` | (hardcoded in vrmah_mcp_proxy.py) | Brief tool usage description |
 | `vrm-proxy://api-spec` | `instructions.md` | API Quick Reference |
 | `vrm-proxy://api-spec-detailed` | `detailed_instructions.md` | API Detailed Reference (all commands) |
 

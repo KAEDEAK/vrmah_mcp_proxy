@@ -2,14 +2,14 @@
 
 > **Environment check**: This document is for **Codex CLI**.
 > Confirm your runtime before setup:
-> - VS Code extension -> see `mcp_proxy/spec/mcp_setup_for_vscode.txt`
-> - Claude Code CLI -> see `mcp_proxy/spec/mcp_setup_for_claude.txt`
+> - VS Code extension -> see `vrmah_mcp_proxy/spec/mcp_setup_for_vscode.txt`
+> - Claude Code CLI -> see `vrmah_mcp_proxy/spec/mcp_setup_for_claude.txt`
 > - Codex CLI -> **this document**
 
 ## Overview
 This guide explains how to use VRM Agent Host and VOICEVOX as MCP tools from Codex CLI.
 
-`mcp_proxy/mcp_server.py` provides:
+`vrmah_mcp_proxy/vrmah_mcp_proxy.py` provides:
 - MCP wrapper for VRM Agent Host HTTP API
 - VOICEVOX synthesis + audio handoff to VRM Agent Host
 
@@ -27,7 +27,7 @@ Supported MCP protocol version: `2025-11-25` (current implementation)
 
 ### 0. Configure `config.json`
 
-Edit `mcp_proxy/config.json`:
+Edit `vrmah_mcp_proxy/config.json`:
 
 ```json
 {
@@ -63,7 +63,7 @@ Note: The legacy format (`"vrmah": "http://..."` as a plain string) still works 
 Run from project root:
 
 ```bash
-codex mcp add vrm_proxy_codex -- python3 mcp_proxy/mcp_server.py --base-url http://<ip-address-vrmah>:34560
+codex mcp add vrm_proxy_codex -- python3 vrmah_mcp_proxy/vrmah_mcp_proxy.py --base-url http://<ip-address-vrmah>:34560
 ```
 
 Notes:
@@ -87,7 +87,7 @@ Example:
 ```toml
 [mcp_servers.vrm_proxy_codex]
 command = "python3"
-args = ["mcp_proxy/mcp_server.py"]
+args = ["vrmah_mcp_proxy/vrmah_mcp_proxy.py"]
 ```
 
 ## Usage
@@ -101,7 +101,7 @@ Then the following tools become available:
 4. **voicevox_speakers**: list available speakers
 
 ### Note on framing
-`mcp_proxy/mcp_server.py` auto-detects framing from the first message.
+`vrmah_mcp_proxy/vrmah_mcp_proxy.py` auto-detects framing from the first message.
 - If first message is NDJSON, it stays in NDJSON mode
 - If first message uses Content-Length framing, client header/body parsing must match
 - NDJSON is usually easier for quick manual tests
@@ -131,13 +131,13 @@ curl "http://<ip-address-vrmah>:34560/?target=animation&cmd=play&id=Idle_cute"
 
 2. Check Python script directly:
 ```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | python3 mcp_proxy/mcp_server.py
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | python3 vrmah_mcp_proxy/vrmah_mcp_proxy.py
 ```
 
 3. Remove and re-add:
 ```bash
 codex mcp remove vrm_proxy_codex
-codex mcp add vrm_proxy_codex -- python3 mcp_proxy/mcp_server.py --base-url http://<ip-address-vrmah>:34560
+codex mcp add vrm_proxy_codex -- python3 vrmah_mcp_proxy/vrmah_mcp_proxy.py --base-url http://<ip-address-vrmah>:34560
 ```
 
 ### Tools do not appear
@@ -146,7 +146,7 @@ Completely restart the Codex session.
 
 ### Change base URL
 
-Edit `vrmah.host` in `mcp_proxy/config.json`, then restart Codex. To change fallback URLs, edit `vrmah.candidates`.
+Edit `vrmah.host` in `vrmah_mcp_proxy/config.json`, then restart Codex. To change fallback URLs, edit `vrmah.candidates`.
 
 ## Codex MCP Command Reference
 

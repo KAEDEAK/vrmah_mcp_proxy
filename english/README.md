@@ -1,7 +1,7 @@
 # VRM MCP Proxy
 
 An integrated proxy server that controls VRM Agent Host and VOICEVOX through MCP (Model Context Protocol).
-The same `mcp_server.py` works across Claude Code CLI, VS Code extensions, and Codex CLI.
+The same `vrmah_mcp_proxy.py` works across Claude Code CLI, VS Code extensions, and Codex CLI.
 
 - You need to adapt config.json to your environment first.
 - VRM Agent Host (provisional name) is required separately.
@@ -9,7 +9,7 @@ The same `mcp_server.py` works across Claude Code CLI, VS Code extensions, and C
 ## Connection Overview and Terms (Beginner-Friendly)
 ### Connection diagram
 ```
-VS Code / LLM CLI / other MCP clients <--> mcp_proxy <--> backend servers (vrmah, voicevox)
+VS Code / LLM CLI / other MCP clients <--> vrmah_mcp_proxy <--> backend servers (vrmah, voicevox)
 ```
 
 If the servers run on your local machine, use `http://localhost:<port>/`.
@@ -24,17 +24,17 @@ Example prompts:
 
 ```
 Environment: Windows 11, PowerShell + Claude Code
-Please configure MCP for VRM Agent Host using mcp_proxy/spec/mcp_setup_*.txt.
+Please configure MCP for VRM Agent Host using vrmah_mcp_proxy/spec/mcp_setup_*.txt.
 ```
 
 ```
 Environment: Windows 11, WSL + Codex
-Please configure MCP for VRM Agent Host using mcp_proxy/spec/mcp_setup_*.txt.
+Please configure MCP for VRM Agent Host using vrmah_mcp_proxy/spec/mcp_setup_*.txt.
 ```
 
 ```
 Environment: Windows 11, VS Code + Claude Code extension
-Please configure MCP for VRM Agent Host using mcp_proxy/spec/mcp_setup_*.txt.
+Please configure MCP for VRM Agent Host using vrmah_mcp_proxy/spec/mcp_setup_*.txt.
 ```
 
 Your AI can usually detect the execution environment. If uncertain, tell it to verify first before changing settings.
@@ -125,7 +125,7 @@ Start VOICEVOX before use if speech is needed. Voice settings are configured in 
 
 ### 1. Configure `config.json`
 
-Edit `mcp_proxy/config.json` for your environment:
+Edit `vrmah_mcp_proxy/config.json` for your environment:
 
 ```json
 {
@@ -201,8 +201,8 @@ Restart the session completely. Existing sessions may not detect newly registere
 ## File structure
 
 ```
-mcp_proxy/
-├── mcp_server.py              # MCP server implementation
+vrmah_mcp_proxy/
+├── vrmah_mcp_proxy.py              # MCP server implementation
 ├── config.json                # Connection settings
 ├── README.md                  # This file
 ├── instructions.md            # API quick reference

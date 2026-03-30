@@ -252,7 +252,7 @@ Use tool: voicevox_speak
 Use tool: voicevox_speakers
 ```
 
-Configure in `mcp_proxy/config.json`:
+Configure in `vrmah_mcp_proxy/config.json`:
 ```json
 {
   "version": 2.0,

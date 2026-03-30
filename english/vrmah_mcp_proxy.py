@@ -6,7 +6,7 @@ This server exposes the VRM Agent Host HTTP API (e.g. http://<ip-address-vrmah>:
 as Model Context Protocol (MCP) tools via the stdio transport.
 
 Usage:
-    python3 mcp_proxy/mcp_server.py
+    python3 vrmah_mcp_proxy/vrmah_mcp_proxy.py
 
 Connection settings are loaded from config.json in the same directory.
 The process reads/writes MCP stdio messages using Content-Length framing.

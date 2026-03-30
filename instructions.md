@@ -261,7 +261,7 @@ voicevox_speak ツールを使用
 voicevox_speakers ツールを使用
 ```
 
-設定は `mcp_proxy/config.json` で行います:
+設定は `vrmah_mcp_proxy/config.json` で行います:
 ```json
 {
   "version": 2.0,

@@ -7,7 +7,7 @@
 ## Windows 11 + Powershell, Claude Code CLI
 
 ### 登録
-claude mcp add vrm_proxy_claude -- py mcp_proxy/mcp_server.py
+claude mcp add vrm_proxy_claude -- py vrmah_mcp_proxy/vrmah_mcp_proxy.py
 
 ### 登録確認
 claude mcp list
@@ -34,7 +34,7 @@ README.md の「CLAUDE.md への追記例」を参照し、アバター連携の
   "mcpServers": {
     "vrm_proxy": {
       "command": "python",
-      "args": ["mcp_proxy/mcp_server.py"]
+      "args": ["vrmah_mcp_proxy/vrmah_mcp_proxy.py"]
     }
   }
 }
@@ -51,12 +51,12 @@ python が使えない場合は py や python3 に置き換える
   "mcpServers": {
     "vrm_proxy_for_claude": {
       "command": "python",
-      "args": ["mcp_proxy/mcp_server.py"]
+      "args": ["vrmah_mcp_proxy/vrmah_mcp_proxy.py"]
     },
     "vrm_proxy_for_codex": {
       "command": "python",
       "args": [
-        "mcp_proxy/mcp_server.py",
+        "vrmah_mcp_proxy/vrmah_mcp_proxy.py",
         "--config", "config_for_codex.json"
       ]
     }
@@ -88,7 +88,7 @@ VRM Agent Host の MCP で挨拶してみて
   "servers": {
     "vrm_proxy": {
       "command": "python",
-      "args": ["mcp_proxy/mcp_server.py"]
+      "args": ["vrmah_mcp_proxy/vrmah_mcp_proxy.py"]
     }
   }
 }
@@ -98,7 +98,7 @@ VRM Agent Host の MCP で挨拶してみて
 ## Windows 11 + WSL + Codex CLI
 
 ### 登録
-codex mcp add vrm_proxy_codex -- python3 mcp_proxy/mcp_server.py --base-url http://<ip-address-vrmah>:34560
+codex mcp add vrm_proxy_codex -- python3 vrmah_mcp_proxy/vrmah_mcp_proxy.py --base-url http://<ip-address-vrmah>:34560
 
 ### 登録確認
 codex mcp list
@@ -117,7 +117,7 @@ LLM は MCP リソース URI 経由でドキュメントを読み込みます。
 
 | MCP リソース URI | 読み込み元ファイル | 内容 |
 |---|---|---|
-| `vrm-proxy://instructions` | (mcp_server.py 内にハードコード) | ツール使用方法の短い説明 |
+| `vrm-proxy://instructions` | (vrmah_mcp_proxy.py 内にハードコード) | ツール使用方法の短い説明 |
 | `vrm-proxy://api-spec` | `instructions.md` | API クイックリファレンス |
 | `vrm-proxy://api-spec-detailed` | `detailed_instructions.md` | API 詳細リファレンス（全コマンド） |
 

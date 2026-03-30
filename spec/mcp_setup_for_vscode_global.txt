@@ -1,0 +1,275 @@
+# VRM MCP Proxy - VSCode グローバル環境 設定手順
+
+> **[環境確認]** このドキュメントは **VSCode グローバル環境**（全プロジェクト共通）用です。
+> プロジェクト単位で設定する場合 → `vrmah_mcp_proxy/spec/mcp_setup_for_vscode.txt` を参照
+> Claude Code CLI として動作中 → `vrmah_mcp_proxy/spec/mcp_setup_for_claude.txt` を参照
+> Codex CLI として動作中 → `vrmah_mcp_proxy/spec/mcp_setup_for_codex.txt` を参照
+
+## 概要
+
+VRM Agent Host と VOICEVOX を MCP ツールとして **VSCode のグローバル環境** に登録し、
+どのプロジェクトを開いても利用できるようにするための設定手順です。
+
+プロジェクトルートの `.mcp.json` ではなく、各環境のグローバル設定ファイルに書き込みます。
+
+### プロジェクト単位との違い
+
+| 項目 | プロジェクト単位 | グローバル |
+|------|-----------------|-----------|
+| 設定場所 (Claude Code VSCode) | `<project>/.mcp.json` | `~/.claude.json` の `mcpServers` |
+| 設定場所 (Codex CLI) | — | `~/.codex/config.toml` の `[mcp_servers.*]` |
+| スクリプトパス | 相対パス可 | **絶対パス必須** |
+| 有効範囲 | そのプロジェクトのみ | 全プロジェクト |
+
+## 前提条件
+
+- Python 3.x がインストールされていること
+- `python` / `python3` / `py` のいずれかが PATH に通っていること
+- requests ライブラリがインストールされていること (`pip install requests`)
+- VRM Agent Host サーバーが稼働していること
+- (オプション) VOICEVOX がインストール・稼働していること
+
+## 設定手順
+
+### 0. vrmah_mcp_proxy.py の絶対パスを確認
+
+グローバル設定では絶対パスが必要です。`vrmah_mcp_proxy.py` のフルパスを確認してください。
+
+例:
+- Windows: `D:/ai_agents/mcp/vrmah_mcp_proxy/vrmah_mcp_proxy.py`
+- Linux/macOS: `/home/user/vrmah_mcp_proxy/vrmah_mcp_proxy.py`
+
+以降、このパスを `<mcp_server_path>` と表記します。
+
+### 1. config.json の設定
+
+`vrmah_mcp_proxy/config.json` を環境に合わせて編集:
+
+```json
+{
+  "version": 2.0,
+  "vrmah": {
+    "host": "http://<ip-address-vrmah>:34560",
+    "candidates": ["http://<ip-address-vrmah-candidate>:34560"]
+  },
+  "voice": {
+    "type": "voicebox",
+    "server": "http://<ip-address-voicevox>:50021",
+    "candidates": ["http://<ip-address-voicevox-candidate>:50021"],
+    "name": "櫻歌ミコ",
+    "speaker_uuid": "0693554c-338e-4790-8982-b9c6d476dc69",
+    "style_id": 43
+  }
+}
+```
+
+設定項目:
+- `vrmah.host`: VRM Agent Host のプライマリ URL
+- `vrmah.candidates`: フォールバック先の URL リスト（オプション）
+- `voice.server`: VOICEVOX サーバーのプライマリ URL
+- `voice.candidates`: VOICEVOX のフォールバック先 URL リスト（オプション）
+- `voice.style_id`: 使用するスピーカーID（`voicevox_speakers` ツールで確認可能）
+
+注: すべてのサーバーが同一マシンで動作している場合は `localhost` を指定。
+別マシンの場合はそのマシンの IP アドレスを指定してください。
+
+### 2. エージェントごとに config を分ける場合（オプション）
+
+Claude と Codex で接続先や音声を分けたい場合、`config_for_codex.json` のように別ファイルを作成します。
+Codex 側は `--config` オプションで指定します（後述）。
+
+デフォルトの `config.json` を読むサーバーと、別 config を読むサーバーでは
+ツール名のプレフィックスが異なります:
+- `vrm_proxy_for_claude` → `mcp__vrm_proxy_for_claude__voicevox_speak` など
+- `vrm_proxy_for_codex` → `mcp__vrm_proxy_for_codex__voicevox_speak` など
+
+### 3-A. Claude Code VSCode 拡張 — グローバル設定
+
+`~/.claude.json`（通常 `C:\Users\<username>\.claude.json` または `/home/<username>/.claude.json`）を編集し、
+`mcpServers` にエントリを追加します。
+
+ファイルが既に存在する場合は `mcpServers` オブジェクトにキーを追加してください。
+
+```json
+{
+  "mcpServers": {
+    "vrm_proxy_for_claude": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "<mcp_server_path>"
+      ]
+    }
+  }
+}
+```
+
+パラメータ説明:
+- `vrm_proxy_for_claude`: MCPサーバー名（任意。ツール名のプレフィックスに使われる）
+- `command`: Python 実行コマンド（環境に応じて `python` / `python3` / `py`）
+- `args`: `vrmah_mcp_proxy.py` の **絶対パス**
+- `type`: `stdio`（省略可能な場合もあるが明示推奨）
+
+注: `~/.claude.json` には Claude Code の他の設定（`numStartups` 等）も含まれています。
+既存の内容を壊さないよう、`mcpServers` キーのみ追加・編集してください。
+
+#### パーミッション設定（推奨）
+
+毎回の確認プロンプトを省略するため、`~/.claude/settings.json` の `permissions.allow` に以下を追加:
+
+```json
+"mcp__vrm_proxy_for_claude__vrm_command",
+"mcp__vrm_proxy_for_claude__batch_vrm_commands",
+"mcp__vrm_proxy_for_claude__voicevox_speak"
+```
+
+### 3-B. Codex CLI — グローバル設定
+
+`~/.codex/config.toml` に以下のセクションを追加:
+
+```toml
+[mcp_servers.vrm_proxy_for_codex]
+command = 'python'
+args = ["<mcp_server_path>", "--config", "config_for_codex.json"]
+env = { SYSTEMROOT = 'C:\Windows' }
+```
+
+パラメータ説明:
+- `vrm_proxy_for_codex`: MCPサーバー名
+- `command`: Python の実行パス（フルパス指定も可: `'C:\Dev\Python312\python.exe'`）
+- `args`: スクリプトパスと `--config` オプション
+- `env`: Windows 環境では `SYSTEMROOT` の指定が必要な場合がある
+
+注: `--config` を省略するとデフォルトの `config.json` が使われます。
+Claude と同じ config でよい場合は `--config` 引数を省略してください。
+
+`codex mcp add` コマンドでも登録可能:
+```bash
+codex mcp add vrm_proxy_for_codex -- python "<mcp_server_path>" --config config_for_codex.json
+```
+
+### 4. CLAUDE.md への追記（自動発話を有効にする場合）
+
+MCP ツールを AI が自発的に使うようにするには、グローバルまたはプロジェクトの
+CLAUDE.md（Claude Code の場合）や指示ファイルに以下のような記述を追加します。
+
+`~/.claude/CLAUDE.md`（グローバル）または `<project>/CLAUDE.md`（プロジェクト単位）:
+
+```markdown
+## Avatar Communication (MCP)
+
+作業の節目で MCP ツールを使い、アバターを通じてユーザーにフィードバックを提供する。
+**毎ターン発話しない** - 重要な節目のみ。
+
+### [必須] MCP ツール初期化手順
+
+MCP ツールは **deferred tools**（遅延ロード）として登録されている。
+会話開始時点ではツール名のみ存在し、パラメータスキーマが未取得のため呼び出せない。
+
+MCP ツールを使う前に、以下の ToolSearch でスキーマを取得すること：
+
+ToolSearch: query="select:mcp__vrm_proxy_for_claude__voicevox_speak,mcp__vrm_proxy_for_claude__vrm_command,mcp__vrm_proxy_for_claude__batch_vrm_commands"
+
+- system-reminder で deferred tools 一覧が届いた後に実行する（会話冒頭ではまだ登録されていない場合がある）
+- スキーマ取得後、作業開始の発話と並行して本来の作業に着手する
+- スキーマ取得に失敗した場合は MCP 通知なしで作業を続行する
+
+### 使用する MCP ツール
+
+| ツール | 用途 |
+|--------|------|
+| `voicevox_speak` | テキスト音声合成でアバターが発話 |
+| `vrm_command` | アニメーション再生・表情変更など |
+| `batch_vrm_commands` | 複数コマンドの一括実行 |
+
+### 発話タイミングと内容
+
+| タイミング | 音声（短く） | アニメーション |
+|-----------|-------------|---------------|
+| 作業開始 | 「了解、やってみるね」 | Idle_energetic |
+| 作業完了 | 「できたよ！」 | Idle_cute + Layer_nod_once |
+| 確認必要 | 「ここ確認してほしいな」 | Idle_think + Layer_tilt_neck |
+| エラー発生 | 「うーん、問題があるみたい」 | Idle_concern |
+| 長時間作業中 | 「まだ作業中だよ」 | Idle_calm |
+
+### ルール
+- 音声は1文、15文字以内を目安
+- 詳細説明は通常のテキストで
+- 連続作業時は最後にまとめて1回
+- ユーザーが急いでいる場合は省略可
+```
+
+注: サーバー名を変えた場合は ToolSearch のクエリも対応するプレフィックスに合わせてください。
+
+### 5. 確認
+
+設定後、以下を実行して反映させてください:
+
+- **Claude Code VSCode**: ウィンドウをリロード（Ctrl+Shift+P → "Developer: Reload Window"）
+- **Codex CLI**: セッションを再起動
+
+確認方法:
+- Claude Code: ステータスバーの MCP アイコンまたは出力パネルで接続状態を確認
+- Codex: `codex mcp list` で登録済みサーバーを確認
+
+## 利用可能なツール
+
+接続成功後、以下のツールが利用可能になります:
+
+1. **vrm_command**: 単一の VRM HTTP コマンドを送信
+2. **batch_vrm_commands**: 複数コマンドの順次実行
+3. **voicevox_speak**: VOICEVOX で音声合成し VRM Agent Host で再生
+4. **voicevox_speakers**: 利用可能なスピーカー一覧を取得
+
+詳細なパラメータは `vrmah_mcp_proxy/spec/mcp_setup_for_vscode.txt` を参照。
+
+## トラブルシューティング
+
+### MCP サーバーが接続できない
+
+1. Python パスの確認: `python --version` が動作するか
+2. requests の確認: `python -c "import requests"` がエラーにならないか
+3. VRM Agent Host の稼働確認: ブラウザまたは curl で `http://<ホスト>:34560/?target=vrm&cmd=getLoc` に応答があるか
+4. スクリプトの直接テスト:
+```bash
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | python "<mcp_server_path>"
+```
+
+### ツールが表示されない
+
+- VSCode: ウィンドウをリロード（Ctrl+Shift+P → "Developer: Reload Window"）
+- Codex: セッションを完全に再起動
+
+### パスの問題（Windows）
+
+- `~/.claude.json` 内のパスはスラッシュ (`/`) またはエスケープしたバックスラッシュ (`\\`) を使用
+- `~/.codex/config.toml` 内のパスはシングルクォートのバックスラッシュ (`'C:\...'`) またはスラッシュが使用可能
+
+### 設定ファイルの場所一覧
+
+| ファイル | 場所 (Windows) | 用途 |
+|---------|----------------|------|
+| `.claude.json` | `C:\Users\<username>\.claude.json` | Claude Code グローバル MCP 設定 |
+| `settings.json` | `C:\Users\<username>\.claude\settings.json` | Claude Code パーミッション設定 |
+| `CLAUDE.md` | `C:\Users\<username>\.claude\CLAUDE.md` | Claude Code グローバル指示 |
+| `config.toml` | `C:\Users\<username>\.codex\config.toml` | Codex CLI グローバル設定 |
+| `config.json` | `<vrmah_mcp_proxy_dir>/config.json` | VRM MCP Proxy 接続設定（デフォルト） |
+
+## AI による自動セットアップ
+
+このドキュメントを AI に読ませて設定を依頼できます。
+
+例:
+```
+環境は Windows 11, VSCode + Claude Code
+vrmah_mcp_proxy/spec/mcp_setup_for_vscode_global.txt を参考に VRM Agent Host の MCP をグローバルに設定して。
+VRM Agent Host は 192.168.1.100:34560、VOICEVOX は localhost:50021 で動いています。
+```
+
+## 参考資料
+
+- プロジェクト単位の設定: `vrmah_mcp_proxy/spec/mcp_setup_for_vscode.txt`
+- Claude Code CLI 用: `vrmah_mcp_proxy/spec/mcp_setup_for_claude.txt`
+- Codex CLI 用: `vrmah_mcp_proxy/spec/mcp_setup_for_codex.txt`
+- アニメーション ID 一覧: `vrmah_mcp_proxy/animation_ids.txt`
+- API リファレンス: `vrmah_mcp_proxy/instructions.md`

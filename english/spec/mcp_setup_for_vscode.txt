@@ -2,14 +2,14 @@
 
 > **Environment check**: This document is for **VS Code extensions**.
 > Confirm your runtime before setup:
-> - Claude Code CLI -> `mcp_proxy/spec/mcp_setup_for_claude.txt`
-> - Codex CLI -> `mcp_proxy/spec/mcp_setup_for_codex.txt`
+> - Claude Code CLI -> `vrmah_mcp_proxy/spec/mcp_setup_for_claude.txt`
+> - Codex CLI -> `vrmah_mcp_proxy/spec/mcp_setup_for_codex.txt`
 > - VS Code extension runtime -> **this document**
 
 ## Overview
 This guide explains how to use VRM Agent Host and VOICEVOX as MCP tools from VS Code extensions.
 
-`mcp_proxy/mcp_server.py` provides:
+`vrmah_mcp_proxy/vrmah_mcp_proxy.py` provides:
 - MCP wrapper for VRM Agent Host HTTP API
 - VOICEVOX synthesis + audio handoff to VRM Agent Host
 
@@ -28,7 +28,7 @@ Supported MCP protocol version: `2025-11-25` (latest)
 
 ### 0. Configure `config.json`
 
-Edit `mcp_proxy/config.json`:
+Edit `vrmah_mcp_proxy/config.json`:
 
 ```json
 {
@@ -74,7 +74,7 @@ Create or edit `.mcp.json` at project root:
   "mcpServers": {
     "vrm_proxy_vscode": {
       "command": "python",
-      "args": ["mcp_proxy/mcp_server.py"]
+      "args": ["vrmah_mcp_proxy/vrmah_mcp_proxy.py"]
     }
   }
 }
@@ -89,7 +89,7 @@ Create or edit `.vscode/mcp.json`:
   "servers": {
     "vrm_proxy_vscode": {
       "command": "python",
-      "args": ["mcp_proxy/mcp_server.py"]
+      "args": ["vrmah_mcp_proxy/vrmah_mcp_proxy.py"]
     }
   }
 }
@@ -154,7 +154,7 @@ curl "http://<ip-address-vrmah>:34560/?target=animation&cmd=play&id=Idle_cute"
 
 2. Confirm Python script works directly:
 ```bash
-python mcp_proxy/mcp_server.py
+python vrmah_mcp_proxy/vrmah_mcp_proxy.py
 ```
 
 3. Confirm JSON syntax in config files:
@@ -167,11 +167,11 @@ Reload VS Code window (`Ctrl+Shift+P` -> `Developer: Reload Window`).
 
 ### Change base URL
 
-Edit `vrmah.host` in `mcp_proxy/config.json`, then reload VS Code. To change fallback URLs, edit `vrmah.candidates`.
+Edit `vrmah.host` in `vrmah_mcp_proxy/config.json`, then reload VS Code. To change fallback URLs, edit `vrmah.candidates`.
 
 ## Note: Using Claude Code CLI instead
 
-If you are using Claude Code CLI rather than VS Code extension, use `mcp_proxy/spec/mcp_setup_for_claude.txt`.
+If you are using Claude Code CLI rather than VS Code extension, use `vrmah_mcp_proxy/spec/mcp_setup_for_claude.txt`.
 
 ## Reference
 
