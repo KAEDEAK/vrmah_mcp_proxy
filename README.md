@@ -292,6 +292,3 @@ vrmah_mcp_proxy/
     ├── mcp_setup_for_vscode.txt        # VSCode 拡張用セットアップ（プロジェクト単位）
     └── mcp_setup_for_vscode_global.txt # VSCode グローバル環境用セットアップ
 ```
-
-## Change Notes
-2026-03-31 00 Renamed, mcp_proxy.py to vrmah_mcp_proxy.py

@@ -1,3 +1,13 @@
+## プロキシスクリプトの選択
+
+| スクリプト | 用途 | ツール数 |
+|---|---|---|
+| `vrmah_mcp_proxy.py` | **標準版**。Claude / Codex など高性能モデル向け。汎用 `vrm_command` で全 API にアクセス可能。MCP リソース対応。 | 4〜5 |
+| `vrmah_minimum_proxy.py` | **最小版**。軽量モデル向け。`vrm_animation`（名前指定で再生）と `voicevox_speak` のみ。スキーマが単純なため軽量モデルでも使いやすい。 | 2〜3 |
+
+迷ったら標準版を使う。軽量モデルで `vrm_command` が使いこなせない場合は最小版に切り替える。
+
+
 ## 共通の準備
 1. config.json の各サーバーと音声の設定
 2. VRM Agent Host を起動し、VRM を読み込んでおく
