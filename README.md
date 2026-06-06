@@ -7,6 +7,10 @@ VRM Agent Host(vrmah) と VOICEVOX を MCP (Model Context Protocol) 経由で制
 - 別途 VRM Agent Host (仮) が必要です。
 - MCPを利用したい環境に合わせて設定します。
 
+## 英語版
+
+英語版は別リポジトリ [KAEDEAK/vrmah_mcp_proxy_en](https://github.com/KAEDEAK/vrmah_mcp_proxy_en) で公開しています。
+
 
 ![Screenshot](./image/vrmah_mcp_vscode.png)
 
@@ -281,7 +285,6 @@ vrmah_mcp_proxy/
 ├── detailed_instructions.md   # API 詳細リファレンス
 ├── animation_ids.txt          # アニメーション ID 一覧
 ├── voicevox_speaker_list.json # VOICEVOX スピーカー一覧
-├── english                    # 英語版（日本語環境では利用しません）
 ├── setup/
 │   ├── setup_example.bat      # VRM Agent Host 初期化スクリプト (cmd)
 │   ├── setup_example.ps1      # VRM Agent Host 初期化スクリプト (PowerShell)

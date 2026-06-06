@@ -316,7 +316,8 @@ IK（Inverse Kinematics）による四肢の制御。Animation Rigging を利用
 | stop | IK アニメーション再生を停止 | `?target=ik&cmd=stop` |
 | animation&op=load | JSON ファイルからアニメーションを読み込み | `?target=ik&cmd=animation&op=load&file=ik_animation_presets.json` |
 | animation&op=save | アニメーションを JSON ファイルに保存 | `?target=ik&cmd=animation&op=save&file=ik_animation_presets.json` |
-| animation&op=list | 読み込み済みアニメーション名一覧 | `?target=ik&cmd=animation&op=list` |
+| animation&op=list | 読み込み済みアニメーション名一覧 (メモリ上) | `?target=ik&cmd=animation&op=list` |
+| animation&op=list_files | IKアニメーションファイル一覧を取得 (VRMAH_UserData/ik/*.json) | `?target=ik&cmd=animation&op=list_files` |
 | animation&op=inspect | アニメーション内容を詳細表示 | `?target=ik&cmd=animation&op=inspect&anim_name=wave_hands` |
 | animation&op=status | フレーム数とフレーム番号一覧 | `?target=ik&cmd=animation&op=status&anim_name=wave_hands` |
 | animation&op=edit | フレーム/パーツを追加/更新 | `?target=ik&cmd=animation&op=edit&anim_name=NAME&frame=0&type=IK&limb=RightArm&pos=...&rot=...&coord=local&weight=1` |
@@ -359,29 +360,134 @@ FK（Forward Kinematics）による Humanoid ボーンの直接制御。
 | cmd | 概要 | 例 |
 | --- | --- | --- |
 | set | ボーンの位置/回転を設定 | `?target=fk&cmd=set&bone=RightHand&rot=40,10,10&coord=local` |
-| get | ボーンの現在状態を取得 | `?target=fk&cmd=get&bone=RightHand` |
+| get | ボーンの現在状態を取得 | `?target=fk&cmd=get&bone=Hips&coord=global` |
+| get_all | 全ボーンの回転を一括取得 | `?target=fk&cmd=get_all&bones=main&coord=global` |
 | push | FK 上書きをスタック保存 | `?target=fk&cmd=push` |
 | pop | FK 上書きをスタック復元 | `?target=fk&cmd=pop` |
 | reset | FK 上書きをクリア | `?target=fk&cmd=reset` |
 | enable | FK 全体の有効/無効 | `?target=fk&cmd=enable&enable=true` |
+| set_mask | FK適用から除外するボーンを設定 | `?target=fk&cmd=set_mask&exclude=LeftUpperLeg,LeftLowerLeg,LeftFoot,...` |
+| clear_mask | ボーンマスクを解除 | `?target=fk&cmd=clear_mask` |
+| get_mask | 現在のボーンマスクを取得 | `?target=fk&cmd=get_mask` |
 | pose_save | ポーズを名前付きで保存 | `?target=fk&cmd=pose_save&pose_name=my_pose` |
 | pose_overwrite | 既存ポーズを上書き保存 | `?target=fk&cmd=pose_overwrite&pose_name=my_pose` |
 | pose_load | 保存済みポーズを適用 | `?target=fk&cmd=pose_load&pose_name=my_pose` |
 | pose_delete | ポーズを削除 | `?target=fk&cmd=pose_delete&pose_name=my_pose` |
 | pose_file&op=save | ポーズを JSON ファイルに保存 | `?target=fk&cmd=pose_file&op=save&file=pose_presets.json` |
 | pose_file&op=load | JSON ファイルからポーズを読み込み | `?target=fk&cmd=pose_file&op=load&file=pose_presets.json` |
+| pose_file&op=list | ポーズファイル一覧を取得 (VRMAH_UserData/pose/*.json) | `?target=fk&cmd=pose_file&op=list` |
+| play | FK アニメーションクリップ再生 (FK_FOLDER 配下) | `?target=fk&cmd=play&file=ik-abcd1234.vrm.json&loop=n&speed=1.0&blend=0.25` |
+| stop | 再生中の FK クリップを停止 | `?target=fk&cmd=stop&reset=y` |
+| animation&op=list_files | FK_FOLDER のクリップ一覧 | `?target=fk&cmd=animation&op=list_files` |
+| animation&op=inspect | FK クリップのメタ情報を取得 | `?target=fk&cmd=animation&op=inspect&file=ik-abcd1234.vrm.json` |
+| animation&op=play_status | 再生状態取得 | `?target=fk&cmd=animation&op=play_status` |
+| upload_clip | VRM humanoid FK クリップ JSON を POST アップロード | `POST ?target=fk&cmd=upload_clip&name=ik-abcd1234` (Content-Type: application/json, body=clip JSON) |
 
 FK set パラメータ
 - `bone`: HumanBodyBones 名称（例: RightUpperArm, RightHand, Head）
 - `pos`: x,y,z（ローカル座標、または coord=global でワールド座標）
 - `rot`: x,y,z（ローカル回転、または coord=global でワールド座標）
-- `coord`: local（ボーンローカル、デフォルト）/ global（ワールド座標から変換）
+- `coord`: local（ボーンローカル、デフォルト）/ global（ワールド座標から変換。pos と rot の両方がワールド座標として解釈される）
+
+FK get パラメータ
+- `bone`: HumanBodyBones 名称
+- `coord`: `global` 指定時に `global_rotation`, `global_position` を追加返却
+
+FK get_all パラメータ
+- `bones`: `main` で主要18ボーンに限定（Hips, Spine, Chest, UpperChest, Neck, Head, 両腕3+両脚3）。省略時は全ボーン（モデル依存、典型54前後）
+  - VRM Agent Host は `main` キーワードのみ認識。カンマ区切りボーン名（例: `Hips,Spine,Head`）は MCP Proxy ツール経由時のみクライアントサイドフィルタで対応
+- `coord`: `global` で `global_rotation` を追加（`global_position` は返らない）
+
+FK set_mask パラメータ
+- `exclude`: 除外するボーン名のCSV（HumanBodyBones enum 名, case-insensitive）
+- 無効なボーン名が1つでも含まれると全体がエラー
+- 呼び出すたびに前回のマスクを置き換え（追記ではない）
+- FK override データは保持されるが ApplyOverrides 時にスキップされる
+
+FK ボーンマスク用途
+- FK で上半身を制御しつつ、脚は IK に任せる場合に脚ボーンを除外
+- 典型例: `exclude=LeftUpperLeg,LeftLowerLeg,LeftFoot,RightUpperLeg,RightLowerLeg,RightFoot`
+
+MCP Proxy FK ヘルパーツール
+VRM Agent Host API を組み合わせた高レベル操作。MCP ツールとしてのみ利用可能（直接 HTTP では呼べない）。
+
+| ツール | 概要 |
+| --- | --- |
+| fk_sample_pose | アニメーション中に N 回 `fk get_all` をサンプリングし、各ボーン・各軸の min/max/avg 統計を返す |
+| fk_snapshot_to_frame | 現在の FK ボーン回転を取得し、`ik animation op=edit` で IK アニメーションフレームとして保存（rotation のみ） |
+| fk_rotate_delta | 指定ボーンの現在回転に delta を加算して `fk set`（coord=global 対応） |
+| fk_generate_and_play | テキストから soma_to_vrm 経由で FK アニメーションクリップを生成し、upload_clip → fk play までを 1 コール (config.json の `soma_to_vrm.host` 設定時のみ公開) |
+
+fk_sample_pose パラメータ
+- `samples`: サンプル回数（1-100、デフォルト: 5）
+- `interval_ms`: サンプル間隔ミリ秒（>= 0、デフォルト: 500）
+- `bones`: ボーンフィルタ（`main` で主要18ボーン、カンマ区切りボーン名で任意フィルタ、省略で全ボーン）
+- 統計処理: Euler角を signed (-180..180) に正規化 → unwrap で連続角に展開 → min/max/avg 計算
+
+fk_snapshot_to_frame パラメータ
+- `anim_name`: 保存先アニメーション名（必須）
+- `frame`: フレーム番号（必須）
+- `playtime`: 再生時間秒（デフォルト: 0.4）
+- `bones`: ボーンフィルタ（`main`、カンマ区切りボーン名、または省略で全ボーン）
+- 処理: `fk get_all` → 各ボーンの `local_rotation` を `ik animation op=edit&type=FK` で書き込み
+- 注意: ボーン数分の HTTP 呼び出しを直列実行するため、全ボーン時はレイテンシが大きい
+
+fk_rotate_delta パラメータ
+- `bone`: HumanBodyBones 名（必須）
+- `delta`: 回転差分 "x,y,z"（必須）
+- `coord`: `local`（デフォルト）/ `global`
+- 処理: `fk get` で現在回転取得 → delta 加算 → `fk set`
+
+fk_generate_and_play パラメータ
+- `text`: 動作のテキスト記述（必須、1-2048 文字）
+- `pose_type`: `T` (default) / `A`
+- `loop`: bool (default false)
+- `speed`: 0.1-5.0 (default 1.0)
+- `blend`: 0.0-5.0 秒 (default 0.25)
+- `auto_enable_fk`: bool (default true)。`true` のとき内部で `fk enable=true` を発行
+- 処理:
+  1. `idempotency_key = "ik-" + uuid16` を払い出し
+  2. `POST {soma_to_vrm.host}/generate` に submit (transport failure のみ同一 key で 2 回まで再送)
+  3. 200 即完了でなければ `GET /jobs/<id>` を 3 秒 × 5 回 poll。4xx は確定失敗として即中断、500 は破棄して中断
+  4. `GET /jobs/<id>/file` でクリップ JSON を取得
+  5. `target=fk&cmd=upload_clip&name=<idem>` で VRM Agent Host へ POST
+  6. (任意) `fk enable=true` → `fk stop&reset=y` → `fk play&file=<idem>.vrm.json&loop=...&speed=...&blend=...`
+- config.json の `soma_to_vrm.host` (および `candidates`) 設定時のみツールが公開される
+- 返り値 (`structuredContent`): `{ok, job_id, idempotency_key, clip_name, clip_file, clip_bytes, frame_count, fps, auto_enable_fk, play_response}`
+- 詳細設計: `D:/dev/VRMAgentHost/dev/docs/soma_to_vrm_automation_plan1.md`
+
+bones パラメータのフィルタ動作
+- `"main"`: VRM Agent Host 側で主要18ボーンに絞り込み
+- カンマ区切りボーン名（例: `"Hips,Spine,Head"`）: サーバーから全ボーン取得後、MCP Proxy でクライアントサイドフィルタ
+- 省略: 全ボーン（モデル依存、典型54前後）
 
 FK/IK 座標系について
 - `coord=global`: ワールド座標系（絶対座標）
 - `coord=local`: VRM ルート基準の相対座標（VRM が移動/回転しても追従）
 - IK はデフォルト global、FK はデフォルト local
 - hint 位置も coord に従って変換される
+
+FK + IK 連携（PostFKSolveIK）
+FK override で Hips 等の親ボーンを回転させた場合、脚 IK のワールド位置がずれる問題を自動補正する。
+動作条件（全て満たす場合のみ）:
+- IKManager が enabled かつモデルがロード済み
+- 脚リム (LeftLeg / RightLeg) のみ
+- `enabled == true`, `weight == 1`（完全位置ロック）, `rotationWeight == 0`（position-only IK）
+
+典型的な使用パターン:
+1. `fk enable&enable=true` + `ik enable&enable=true`
+2. `fk set_mask&exclude=LeftUpperLeg,LeftLowerLeg,LeftFoot,RightUpperLeg,RightLowerLeg,RightFoot`
+3. `ik set&limb=LeftLeg&weight=1` + `ik set&limb=RightLeg&weight=1`
+4. `fk set&bone=Hips&rot=10,20,0` → 脚は自動的にワールド位置を維持
+
+rotationWeight の自動同期（ik set 内部動作）
+- `rot` を指定 → `rotationWeight = weight`
+- `weight` のみ変更（rotation アクティブ） → `rotationWeight = weight` に追従
+- `weight` のみ変更（rotation 未設定） → `rotationWeight = 0` のまま
+
+実行順序（LateUpdate, DefaultExecutionOrder で保証）
+- FKOverrideApplier (Order 100): FK override をボーンに適用
+- IKPostApplier (Order 200): 脚 IK を再計算 (PostFKSolveIK)
 
 IK アニメーション JSON フォーマット例
 ```json

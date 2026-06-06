@@ -22,6 +22,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlencode
@@ -33,6 +34,18 @@ if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="surrogateescape")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="surrogateescape")
     sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="surrogateescape")
+
+# Side-by-side lifecycle module. ``_lifecycle`` installs idle / parent
+# watchdog daemon threads so this process exits cleanly when the MCP
+# host (codex / claude / VSCode) goes away — without it, orphaned
+# generations accumulate on Windows because ``stdin`` does not always
+# see EOF when ``codex.exe app-server`` hands a fresh subprocess
+# without closing the previous one's pipe. See ``_lifecycle.py`` next
+# to this file for the full rationale.
+try:
+    import _lifecycle  # type: ignore
+except Exception:  # pragma: no cover - lifecycle is optional, never fatal
+    _lifecycle = None  # type: ignore[assignment]
 
 JSONRPC_VERSION = "2.0"
 LATEST_PROTOCOL_VERSION = "2025-11-25"
@@ -51,17 +64,37 @@ DEFAULT_SERVER_INFO = {
 
 INSTRUCTION_TEXT = (
     "VRM MCP Proxy exposes the VRM Agent Host HTTP API and VOICEVOX TTS as MCP tools.\n\n"
-    "VRM Agent Host commands:\n"
+    "Common VRM Agent Host commands (partial list, NOT exhaustive):\n"
     "- vrm/getLoc - Get avatar position\n"
     "- vrm/getRot - Get avatar rotation\n"
     "- vrm/gaze_control - Control gaze (enable=true/false)\n"
     "- animation/play - Play animation (id=Idle_generic&seamless=y)\n"
-    "- background/fill - Set background color (color=FF0000)\n\n"
-    "Use `vrm_command` with target and cmd parameters.\n\n"
+    "- background/fill - Set background color (color=FF0000)\n"
+    "- fk/play, fk/stop, fk/upload_clip - FK animation playback\n"
+    "- wing_menu/... - Wing radial menu operations\n\n"
+    "Use `vrm_command` with target and cmd parameters. Use `batch_vrm_commands` for "
+    "multi-step sequences. `fk_generate_and_play` is also exposed when soma_to_vrm "
+    "is configured server-side (text-to-motion generation).\n\n"
     "VOICEVOX TTS:\n"
     "- voicevox_speak - Synthesize text and play through VRM Agent Host\n"
     "- voicevox_speakers - List available speakers\n\n"
-    "See vrm-proxy://api-spec resource for documentation."
+    "## IMPORTANT: How to discover the exact target/cmd/params\n"
+    "The list above is a minimal cheat sheet. Follow this TWO-STEP lookup:\n\n"
+    "**Step 1 — Read the Quick Reference FIRST:**\n"
+    "    uri: vrm-proxy://api-spec\n"
+    "This concise document covers the most common commands (animation, wing_menu, gaze, "
+    "camera, background, lip sync, etc.). Most tasks can be solved with this alone.\n\n"
+    "**Step 2 — Only if Step 1 didn't cover your need**, read the detailed spec:\n"
+    "    uri: vrm-proxy://api-spec-detailed\n"
+    "This is a ~30KB full reference. Page through it to find advanced or uncommon commands "
+    "(Body Interaction, IK/FK, advanced parameters).\n\n"
+    "If a vrm_command call fails with 'Unknown command' or a 4xx, it means you guessed "
+    "wrong — read the spec (start with api-spec) and retry. "
+    "Do NOT give up after one failed guess.\n\n"
+    "Resources exposed by this server:\n"
+    "- vrm-proxy://instructions      (these instructions, full text)\n"
+    "- vrm-proxy://api-spec          (concise API spec — READ THIS FIRST)\n"
+    "- vrm-proxy://api-spec-detailed (full reference, ~30KB — use only when api-spec is insufficient)"
 )
 
 
@@ -123,6 +156,27 @@ def _resolve_vrmah_endpoints(config: Dict[str, Any]) -> Tuple[str, List[str]]:
         return base_url, candidates
 
     return default_base_url, []
+
+
+def _resolve_soma_endpoint(config: Dict[str, Any]) -> Tuple[Optional[str], List[str]]:
+    """Resolve soma_to_vrm API server URL and fallback candidates from config.
+
+    Accepts either a plain string or a dict with `host` / `server` and `candidates`.
+    Returns (base_url, candidates). base_url is None if not configured.
+    """
+    soma = config.get("soma_to_vrm") if isinstance(config, dict) else None
+    if isinstance(soma, str):
+        base = _normalize_base_url(soma, "")
+        return (base or None), []
+    if isinstance(soma, dict):
+        base = _normalize_base_url(soma.get("host") or soma.get("server"), "")
+        if not base:
+            return None, []
+        candidates = _normalize_url_candidates(soma.get("candidates"), base)
+        # Drop the primary itself from candidates list
+        candidates = [c for c in candidates if c != base]
+        return base, candidates
+    return None, []
 
 
 @dataclass
@@ -513,6 +567,17 @@ class MCPProxyServer:
         self._lock = threading.Lock()
         self._running = True
 
+        # soma_to_vrm setup (optional)
+        self.soma_base_url: Optional[str] = None
+        self.soma_candidates: List[str] = []
+        if config:
+            self.soma_base_url, self.soma_candidates = _resolve_soma_endpoint(config)
+            if self.soma_base_url:
+                logging.info("soma_to_vrm URL: %s", self.soma_base_url)
+                if self.soma_candidates:
+                    logging.info("soma_to_vrm fallback candidates: %s",
+                                 ", ".join(self.soma_candidates))
+
         # VOICEVOX setup
         self.voicevox_client: Optional[VoicevoxClient] = None
         self.voicevox_config: Optional[VoicevoxConfig] = None
@@ -654,13 +719,25 @@ class MCPProxyServer:
 
     # Message handling --------------------------------------------------
     def _handle_message(self, message: Dict[str, Any]) -> None:
-        if "method" in message:
-            if "id" in message:
-                self._handle_request(message)
+        # Bracket every host-driven message with the lifecycle in-flight
+        # counter so the idle watchdog cannot recycle the process while
+        # we are still serving a request. ``mark_request_end`` is in a
+        # ``finally`` so an internal exception path cannot leak the
+        # counter — a leaked counter would block the idle watchdog
+        # indefinitely.
+        if _lifecycle is not None:
+            _lifecycle.mark_request_start()
+        try:
+            if "method" in message:
+                if "id" in message:
+                    self._handle_request(message)
+                else:
+                    self._handle_notification(message)
             else:
-                self._handle_notification(message)
-        else:
-            logging.debug("Ignoring message without method: %s", message)
+                logging.debug("Ignoring message without method: %s", message)
+        finally:
+            if _lifecycle is not None:
+                _lifecycle.mark_request_end()
 
     def _handle_notification(self, message: Dict[str, Any]) -> None:
         method = message.get("method")
@@ -839,6 +916,163 @@ class MCPProxyServer:
 
             tools.extend([voicevox_speak_tool, voicevox_speakers_tool])
 
+        # FK helper tools
+        fk_sample_pose_tool = {
+            "name": "fk_sample_pose",
+            "title": "FK Pose Sampling",
+            "description": (
+                "Sample FK bone rotations multiple times during animation playback. "
+                "Returns min/max/avg statistics for each bone axis. "
+                "Euler angles are signed-normalized (-180..180) before statistics."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "samples": {
+                        "type": "integer",
+                        "description": "Number of samples to take (default: 5)",
+                        "default": 5,
+                        "minimum": 1,
+                        "maximum": 100,
+                    },
+                    "interval_ms": {
+                        "type": "integer",
+                        "description": "Interval between samples in milliseconds (default: 500)",
+                        "default": 500,
+                        "minimum": 0,
+                    },
+                    "bones": {
+                        "type": "string",
+                        "description": "Bone filter: 'main' for 18 main bones, comma-separated names (e.g. 'Hips,Spine,Head'), or omit for all",
+                    },
+                },
+            },
+        }
+
+        fk_snapshot_to_frame_tool = {
+            "name": "fk_snapshot_to_frame",
+            "title": "FK Snapshot to Animation Frame",
+            "description": (
+                "Capture current FK bone rotations and save as an IK animation frame. "
+                "Only saves rotation (not position). Use fk_get for position if needed."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "anim_name": {
+                        "type": "string",
+                        "description": "Animation name to save to",
+                    },
+                    "frame": {
+                        "type": "integer",
+                        "description": "Frame number",
+                    },
+                    "playtime": {
+                        "type": "number",
+                        "description": "Playtime in seconds (default: 0.4)",
+                        "default": 0.4,
+                    },
+                    "bones": {
+                        "type": "string",
+                        "description": "Bone filter: 'main' for 18 main bones, comma-separated names (e.g. 'Hips,Spine,Head'), or omit for all",
+                    },
+                },
+                "required": ["anim_name", "frame"],
+            },
+        }
+
+        fk_rotate_delta_tool = {
+            "name": "fk_rotate_delta",
+            "title": "FK Relative Rotation",
+            "description": (
+                "Apply a relative rotation delta to a bone. "
+                "Reads current rotation, adds delta, and sets the result."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "bone": {
+                        "type": "string",
+                        "description": "HumanBodyBones name (e.g. RightUpperArm)",
+                    },
+                    "delta": {
+                        "type": "string",
+                        "description": "Rotation delta as x,y,z (e.g. '0,10,0')",
+                    },
+                    "coord": {
+                        "type": "string",
+                        "description": "Coordinate system: 'local' (default) or 'global'",
+                        "default": "local",
+                        "enum": ["local", "global"],
+                    },
+                },
+                "required": ["bone", "delta"],
+            },
+        }
+
+        tools.extend([fk_sample_pose_tool, fk_snapshot_to_frame_tool, fk_rotate_delta_tool])
+
+        if self.soma_base_url:
+            fk_generate_and_play_tool = {
+                "name": "fk_generate_and_play",
+                "title": "Text to FK Animation (generate & play)",
+                "description": (
+                    "Generate an FK animation clip from text via soma_to_vrm and play it on the VRM avatar. "
+                    "Submits text to the soma_to_vrm API, polls until done, uploads the resulting clip "
+                    "to VRM Agent Host, and starts FK playback. Hides the entire pipeline behind a single call."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "Natural-language motion description (e.g. 'a person waves hello')",
+                            "minLength": 1,
+                            "maxLength": 2048,
+                        },
+                        "pose_type": {
+                            "type": "string",
+                            "description": "Rest pose: 'T' (default) or 'A'",
+                            "default": "T",
+                            "enum": ["T", "A"],
+                        },
+                        "loop": {
+                            "type": "boolean",
+                            "description": "Loop playback (default false)",
+                            "default": False,
+                        },
+                        "speed": {
+                            "type": "number",
+                            "description": "Playback speed multiplier (default 1.0)",
+                            "default": 1.0,
+                            "minimum": 0.1,
+                            "maximum": 5.0,
+                        },
+                        "blend": {
+                            "type": "number",
+                            "description": "Crossfade blend duration in seconds (default 0.25)",
+                            "default": 0.25,
+                            "minimum": 0.0,
+                            "maximum": 5.0,
+                        },
+                        "auto_enable_fk": {
+                            "type": "boolean",
+                            "description": "Auto-issue 'fk enable=true' before play (default true)",
+                            "default": True,
+                        },
+                        "seconds": {
+                            "type": "number",
+                            "description": "Motion duration in seconds (default 3.0, range 0.5-30.0)",
+                            "default": 3.0,
+                            "minimum": 0.5,
+                            "maximum": 30.0,
+                        },
+                    },
+                    "required": ["text"],
+                },
+            }
+            tools.append(fk_generate_and_play_tool)
+
         return tools
 
     def _handle_tools_list(self, request_id: Any) -> None:
@@ -862,6 +1096,18 @@ class MCPProxyServer:
             self._send_result(request_id, result)
         elif name == "voicevox_speakers":
             result = self._execute_voicevox_speakers(arguments)
+            self._send_result(request_id, result)
+        elif name == "fk_sample_pose":
+            result = self._execute_fk_sample_pose(arguments)
+            self._send_result(request_id, result)
+        elif name == "fk_snapshot_to_frame":
+            result = self._execute_fk_snapshot_to_frame(arguments)
+            self._send_result(request_id, result)
+        elif name == "fk_rotate_delta":
+            result = self._execute_fk_rotate_delta(arguments)
+            self._send_result(request_id, result)
+        elif name == "fk_generate_and_play":
+            result = self._execute_fk_generate_and_play(arguments)
             self._send_result(request_id, result)
         else:
             self._send_error(request_id, -32602, f"Unknown tool: {name}")
@@ -955,6 +1201,291 @@ class MCPProxyServer:
             "isError": error_count > 0,
         }
 
+    # FK helpers --------------------------------------------------------
+    @staticmethod
+    def _signed_angle(val: float) -> float:
+        """Normalize 0-360 Euler to -180..180 range."""
+        if val > 180.0:
+            return val - 360.0
+        return val
+
+    @staticmethod
+    def _extract_error_message(result) -> str:
+        """Extract meaningful error message from VRMCommandResult.
+
+        Falls back through: result.error -> response_json.message -> response_excerpt -> generic.
+        """
+        if result.error:
+            return result.error
+        if result.response_json and isinstance(result.response_json, dict):
+            msg = result.response_json.get("message")
+            if msg:
+                return str(msg)
+        if result.response_excerpt:
+            return result.response_excerpt[:200]
+        return f"HTTP {result.status_code}" if result.status_code else "unknown error"
+
+    @staticmethod
+    def _unwrap_angles(angles: List[float]) -> List[float]:
+        """Unwrap angle series so that consecutive jumps > 180 are corrected.
+
+        Uses raw previous value (not accumulated) to compute diff,
+        and while-loops for ±360 normalization to handle multi-rotation.
+        """
+        if not angles:
+            return angles
+        unwrapped = [angles[0]]
+        for i in range(1, len(angles)):
+            diff = angles[i] - angles[i - 1]
+            while diff > 180.0:
+                diff -= 360.0
+            while diff < -180.0:
+                diff += 360.0
+            unwrapped.append(unwrapped[-1] + diff)
+        return unwrapped
+
+    def _fk_get_all(self, bones: str = None) -> Dict[str, Any]:
+        """Call fk get_all and return parsed result."""
+        params: Dict[str, Any] = {}
+        if bones == "main":
+            params["bones"] = bones
+        result = self.bridge.perform_call(target="fk", cmd="get_all", params=params)
+        return result
+
+    @staticmethod
+    def _filter_bone_list(bone_list: list, bones_filter: str) -> list:
+        """Filter bone_list by comma-separated bone names (client-side).
+
+        If bones_filter is None, empty, or 'main', returns bone_list as-is
+        (server already handled 'main' filtering).
+        """
+        if not bones_filter or bones_filter == "main":
+            return bone_list
+        allowed = set(b.strip() for b in bones_filter.split(",") if b.strip())
+        return [b for b in bone_list if b.get("bone", "") in allowed]
+
+    def _execute_fk_sample_pose(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Sample FK rotations N times and return min/max/avg statistics."""
+        samples = int(args.get("samples", 5))
+        interval_ms = int(args.get("interval_ms", 500))
+        bones_filter = args.get("bones")
+
+        if samples < 1 or samples > 100:
+            return {
+                "content": [{"type": "text", "text": "samples must be 1-100"}],
+                "structuredContent": {"ok": False, "error": "samples out of range"},
+                "isError": True,
+            }
+        if interval_ms < 0:
+            return {
+                "content": [{"type": "text", "text": "interval_ms must be >= 0"}],
+                "structuredContent": {"ok": False, "error": "interval_ms out of range"},
+                "isError": True,
+            }
+
+        all_snapshots: List[Dict[str, List[float]]] = []
+        for i in range(samples):
+            result = self._fk_get_all(bones_filter)
+            if not result.ok or not result.response_json:
+                err_msg = self._extract_error_message(result)
+                return {
+                    "content": [{"type": "text", "text": f"fk get_all failed at sample {i+1}: {err_msg}"}],
+                    "structuredContent": {"ok": False, "error": err_msg},
+                    "isError": True,
+                }
+            data = result.response_json.get("data", {})
+            bone_list = self._filter_bone_list(data.get("bones", []), bones_filter)
+            snapshot: Dict[str, List[float]] = {}
+            for b in bone_list:
+                name = b.get("bone", "")
+                rot = b.get("local_rotation", {})
+                snapshot[name] = [
+                    self._signed_angle(float(rot.get("x", 0))),
+                    self._signed_angle(float(rot.get("y", 0))),
+                    self._signed_angle(float(rot.get("z", 0))),
+                ]
+            all_snapshots.append(snapshot)
+            if i < samples - 1:
+                time.sleep(interval_ms / 1000.0)
+
+        # Compute statistics with circular mean and unwrapped min/max
+        stats: Dict[str, Any] = {}
+        if all_snapshots:
+            all_bones = list(all_snapshots[0].keys())
+            for bone_name in all_bones:
+                vals = [s[bone_name] for s in all_snapshots if bone_name in s]
+                if not vals:
+                    continue
+                axis_stats = {"min": [], "max": [], "avg": [], "samples": len(vals)}
+                for ax in range(3):
+                    raw = [v[ax] for v in vals]
+                    unwrapped = self._unwrap_angles(raw)
+                    axis_stats["min"].append(round(min(unwrapped), 2))
+                    axis_stats["max"].append(round(max(unwrapped), 2))
+                    axis_stats["avg"].append(round(sum(unwrapped) / len(unwrapped), 2))
+                stats[bone_name] = axis_stats
+
+        text = f"Sampled {samples} poses, {len(stats)} bones"
+        return {
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": {
+                "ok": True,
+                "samples": samples,
+                "interval_ms": interval_ms,
+                "bone_count": len(stats),
+                "statistics": stats,
+            },
+            "isError": False,
+        }
+
+    def _execute_fk_snapshot_to_frame(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Capture current FK rotations and save as animation frame."""
+        anim_name = args.get("anim_name", "")
+        frame = args.get("frame")
+        playtime = float(args.get("playtime", 0.4))
+        bones_filter = args.get("bones")
+
+        if not anim_name or frame is None:
+            return {
+                "content": [{"type": "text", "text": "anim_name and frame are required"}],
+                "structuredContent": {"ok": False, "error": "missing required params"},
+                "isError": True,
+            }
+
+        # Get current bone rotations
+        result = self._fk_get_all(bones_filter)
+        if not result.ok or not result.response_json:
+            err_msg = self._extract_error_message(result)
+            return {
+                "content": [{"type": "text", "text": f"fk get_all failed: {err_msg}"}],
+                "structuredContent": {"ok": False, "error": err_msg},
+                "isError": True,
+            }
+
+        data = result.response_json.get("data", {})
+        bone_list = self._filter_bone_list(data.get("bones", []), bones_filter)
+        saved_count = 0
+        errors: List[str] = []
+
+        for b in bone_list:
+            bone_name = b.get("bone", "")
+            rot = b.get("local_rotation", {})
+            rot_str = f"{rot.get('x', 0)},{rot.get('y', 0)},{rot.get('z', 0)}"
+
+            edit_result = self.bridge.perform_call(
+                target="ik",
+                cmd="animation",
+                params={
+                    "op": "edit",
+                    "anim_name": anim_name,
+                    "frame": str(frame),
+                    "type": "FK",
+                    "bone": bone_name,
+                    "rot": rot_str,
+                    "coord": "local",
+                    "playtime": str(playtime),
+                },
+            )
+            if edit_result.ok:
+                saved_count += 1
+            else:
+                errors.append(f"{bone_name}: {self._extract_error_message(edit_result)}")
+
+        text = f"Saved {saved_count}/{len(bone_list)} bones to {anim_name} frame {frame}"
+        if errors:
+            text += f" ({len(errors)} errors)"
+
+        return {
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": {
+                "ok": len(errors) == 0,
+                "anim_name": anim_name,
+                "frame": frame,
+                "saved_count": saved_count,
+                "total_bones": len(bone_list),
+                "errors": errors,
+            },
+            "isError": len(errors) > 0,
+        }
+
+    def _execute_fk_rotate_delta(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply relative rotation delta to a bone."""
+        bone = args.get("bone", "")
+        delta_str = args.get("delta", "")
+        coord = args.get("coord", "local")
+
+        if not bone or not delta_str:
+            return {
+                "content": [{"type": "text", "text": "bone and delta are required"}],
+                "structuredContent": {"ok": False, "error": "missing required params"},
+                "isError": True,
+            }
+
+        # Parse delta
+        try:
+            parts = [float(x.strip()) for x in delta_str.split(",")]
+            if len(parts) != 3:
+                raise ValueError("need 3 values")
+            dx, dy, dz = parts
+        except (ValueError, TypeError) as e:
+            return {
+                "content": [{"type": "text", "text": f"Invalid delta format: {e}"}],
+                "structuredContent": {"ok": False, "error": f"invalid delta: {e}"},
+                "isError": True,
+            }
+
+        # Get current rotation
+        get_params: Dict[str, Any] = {"bone": bone}
+        if coord == "global":
+            get_params["coord"] = "global"
+        get_result = self.bridge.perform_call(target="fk", cmd="get", params=get_params)
+        if not get_result.ok or not get_result.response_json:
+            err_msg = self._extract_error_message(get_result)
+            return {
+                "content": [{"type": "text", "text": f"fk get failed: {err_msg}"}],
+                "structuredContent": {"ok": False, "error": err_msg},
+                "isError": True,
+            }
+
+        data = get_result.response_json.get("data", {})
+        if coord == "global":
+            rot = data.get("global_rotation", data.get("local_rotation", {}))
+        else:
+            rot = data.get("local_rotation", {})
+
+        cur_x = float(rot.get("x", 0))
+        cur_y = float(rot.get("y", 0))
+        cur_z = float(rot.get("z", 0))
+
+        new_x = cur_x + dx
+        new_y = cur_y + dy
+        new_z = cur_z + dz
+
+        # Set new rotation
+        set_params: Dict[str, Any] = {
+            "bone": bone,
+            "rot": f"{new_x},{new_y},{new_z}",
+        }
+        if coord == "global":
+            set_params["coord"] = "global"
+        set_result = self.bridge.perform_call(target="fk", cmd="set", params=set_params)
+
+        text = f"fk set {bone} rot={new_x:.1f},{new_y:.1f},{new_z:.1f} (delta={dx},{dy},{dz})"
+        return {
+            "content": [{"type": "text", "text": text}],
+            "structuredContent": {
+                "ok": set_result.ok,
+                "bone": bone,
+                "previous_rotation": {"x": cur_x, "y": cur_y, "z": cur_z},
+                "delta": {"x": dx, "y": dy, "z": dz},
+                "new_rotation": {"x": new_x, "y": new_y, "z": new_z},
+                "coord": coord,
+                "status_code": set_result.status_code,
+                "error": self._extract_error_message(set_result) if not set_result.ok else None,
+            },
+            "isError": not set_result.ok,
+        }
+
     # VOICEVOX ----------------------------------------------------------
     def _execute_voicevox_speak(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Synthesize text with VOICEVOX and send to VRM Agent Host."""
@@ -1045,6 +1576,249 @@ class MCPProxyServer:
                 "structuredContent": {"ok": False, "error": error_str, "step": step, "audio_size": audio_size},
                 "isError": True,
             }
+
+    def _execute_fk_generate_and_play(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Text -> soma_to_vrm -> upload_clip -> fk play (single MCP call).
+
+        Pipeline (per dev/docs/soma_to_vrm_automation_plan1.md):
+          1. POST /generate (transport-failure-only retry x2 with same idempotency_key)
+          2. Poll GET /jobs/<id> every 3s, max 5 attempts. 500 = discard.
+          3. GET /jobs/<id>/file
+          4. fk upload_clip (POST body=clip JSON)
+          5. fk enable + fk stop&reset=y + fk play
+        """
+
+        def _err(msg: str, **extra: Any) -> Dict[str, Any]:
+            sc: Dict[str, Any] = {"ok": False, "error": msg}
+            sc.update(extra)
+            return {
+                "content": [{"type": "text", "text": msg}],
+                "structuredContent": sc,
+                "isError": True,
+            }
+
+        if not self.soma_base_url:
+            return _err("soma_to_vrm not configured (config.json: soma_to_vrm.host)")
+
+        text = args.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return _err("text is required and must be a non-empty string")
+
+        if len(text) > 2048:
+            return _err(f"text exceeds maxLength=2048 (got {len(text)})")
+
+        pose_type = str(args.get("pose_type") or "T").upper()
+        if pose_type not in ("T", "A"):
+            return _err(f"pose_type must be 'T' or 'A', got: {pose_type}")
+        loop = bool(args.get("loop", False))
+        auto_enable_fk = bool(args.get("auto_enable_fk", True))
+        try:
+            speed = float(args.get("speed", 1.0))
+        except (TypeError, ValueError):
+            return _err("speed must be a number")
+        try:
+            blend = float(args.get("blend", 0.25))
+        except (TypeError, ValueError):
+            return _err("blend must be a number")
+        if not (0.1 <= speed <= 5.0):
+            return _err(f"speed out of range [0.1, 5.0]: {speed}")
+        if not (0.0 <= blend <= 5.0):
+            return _err(f"blend out of range [0.0, 5.0]: {blend}")
+        try:
+            seconds = float(args.get("seconds", 3.0))
+        except (TypeError, ValueError):
+            return _err("seconds must be a number")
+        if not (0.5 <= seconds <= 30.0):
+            return _err(f"seconds out of range [0.5, 30.0]: {seconds}")
+
+        idem = "ik-" + uuid.uuid4().hex[:16]
+        clip_name = idem  # ik- prefix is required for janitor (TODO-1)
+        clip_file = f"{clip_name}.vrm.json"
+
+        # Build base URL list with candidates fallback (M1 partial)
+        soma_base_urls = [self.soma_base_url] + [
+            c for c in self.soma_candidates if c != self.soma_base_url
+        ]
+
+        def _soma_request(method: str, path: str, **kw: Any):
+            """Try primary URL first, then candidates on transport failure only.
+            Returns (response, base_url_used) or raises the last exception."""
+            last_exc: Optional[Exception] = None
+            for base in soma_base_urls:
+                try:
+                    return requests.request(method, f"{base}{path}", **kw), base
+                except (requests.ConnectionError, requests.Timeout) as e:
+                    last_exc = e
+                    logging.warning("soma %s %s transport failure on %s: %s",
+                                    method, path, base, e)
+                    continue
+            raise last_exc if last_exc else RuntimeError("no soma endpoint available")
+
+        payload = {"idempotency_key": idem, "text": text, "pose_type": pose_type, "seconds": seconds}
+
+        # 1) submit (transport failure only -> retry x2 with same key, across candidates)
+        submit_resp = None
+        submit_err = None
+        for attempt in range(2):
+            try:
+                submit_resp, _ = _soma_request("POST", "/generate", json=payload, timeout=4.0)
+                break
+            except (requests.ConnectionError, requests.Timeout) as e:
+                submit_err = e
+                logging.warning("soma submit attempt=%d transport failure: %s", attempt + 1, e)
+                continue
+        if submit_resp is None:
+            return _err(f"soma_to_vrm submit failed (transport): {submit_err}", idempotency_key=idem)
+        if submit_resp.status_code == 429:
+            # Surface retry_after_ms for the caller (m2)
+            retry_after_ms = None
+            try:
+                retry_after_ms = submit_resp.json().get("retry_after_ms")
+            except ValueError:
+                pass
+            return _err(
+                f"soma_to_vrm queue full (HTTP 429)",
+                idempotency_key=idem,
+                http_status=429,
+                retry_after_ms=retry_after_ms,
+            )
+        if submit_resp.status_code not in (200, 202):
+            return _err(
+                f"soma_to_vrm submit HTTP {submit_resp.status_code}: {submit_resp.text[:300]}",
+                idempotency_key=idem,
+                http_status=submit_resp.status_code,
+            )
+
+        try:
+            submit_json = submit_resp.json()
+        except ValueError:
+            return _err(f"soma_to_vrm submit returned non-JSON: {submit_resp.text[:300]}")
+
+        job_id = submit_json.get("job_id")
+        if not job_id:
+            return _err(f"soma_to_vrm submit missing job_id: {submit_json}")
+
+        # 2) poll if not already done (HTTP 200 + status=done = inline completion)
+        is_done = (submit_resp.status_code == 200 and submit_json.get("status") == "done")
+        result_meta: Dict[str, Any] = {
+            "frame_count": submit_json.get("frame_count"),
+            "fps": submit_json.get("fps"),
+        }
+        if not is_done:
+            for attempt in range(30):
+                time.sleep(5.0)
+                try:
+                    pr, _ = _soma_request("GET", f"/jobs/{job_id}", timeout=5.0)
+                except (requests.ConnectionError, requests.Timeout) as e:
+                    logging.warning("soma poll attempt=%d transport: %s", attempt + 1, e)
+                    continue
+                # M2: 4xx は確定失敗として即返す。retry 対象は transport failure と queued/running のみ。
+                if 400 <= pr.status_code < 500:
+                    return _err(
+                        f"soma job poll HTTP {pr.status_code}: {pr.text[:200]}",
+                        job_id=job_id,
+                        http_status=pr.status_code,
+                    )
+                if pr.status_code == 500:
+                    return _err(f"soma job 500 (discarded): {pr.text[:200]}", job_id=job_id)
+                if pr.status_code != 200:
+                    logging.warning("soma poll attempt=%d HTTP %d", attempt + 1, pr.status_code)
+                    continue
+                try:
+                    pj = pr.json()
+                except ValueError:
+                    continue
+                st = pj.get("status")
+                if st == "done":
+                    is_done = True
+                    if pj.get("frame_count") is not None:
+                        result_meta["frame_count"] = pj.get("frame_count")
+                    if pj.get("fps") is not None:
+                        result_meta["fps"] = pj.get("fps")
+                    break
+                if st == "error":
+                    return _err(
+                        f"soma job error: {pj.get('error_code', 'unknown')}",
+                        job_id=job_id,
+                    )
+                # queued / running -> next poll
+            if not is_done:
+                return _err(f"soma job poll timeout (150s)", job_id=job_id)
+
+        # 3) fetch result file
+        try:
+            fr, _ = _soma_request("GET", f"/jobs/{job_id}/file", timeout=10.0)
+        except (requests.ConnectionError, requests.Timeout) as e:
+            return _err(f"soma fetch file transport failure: {e}", job_id=job_id)
+        if fr.status_code != 200:
+            return _err(
+                f"soma fetch file HTTP {fr.status_code}: {fr.text[:200]}",
+                job_id=job_id,
+                http_status=fr.status_code,
+            )
+        clip_text = fr.text
+        clip_bytes = len(fr.content)
+
+        # 4) upload to VRM Agent Host
+        up = self.bridge.perform_call(
+            target="fk",
+            cmd="upload_clip",
+            params={"name": clip_name},
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            text_payload=clip_text,
+        )
+        if not up.ok:
+            return _err(
+                f"upload_clip failed: {self._extract_error_message(up)}",
+                job_id=job_id,
+                clip_name=clip_name,
+            )
+
+        # 5) (optional) enable + stop&reset + play
+        # m1: best-effort 失敗もログに残す
+        if auto_enable_fk:
+            en = self.bridge.perform_call(target="fk", cmd="enable", params={"enable": "true"})
+            if not en.ok:
+                logging.warning("fk enable best-effort failed: %s",
+                                self._extract_error_message(en))
+        st = self.bridge.perform_call(target="fk", cmd="stop", params={"reset": "y"})
+        if not st.ok:
+            logging.warning("fk stop best-effort failed: %s",
+                            self._extract_error_message(st))
+        play = self.bridge.perform_call(
+            target="fk",
+            cmd="play",
+            params={
+                "file": clip_file,
+                "loop": "y" if loop else "n",
+                "speed": f"{speed:g}",
+                "blend": f"{blend:g}",
+            },
+        )
+        if not play.ok:
+            return _err(
+                f"fk play failed: {self._extract_error_message(play)}",
+                job_id=job_id,
+                clip_file=clip_file,
+            )
+
+        return {
+            "content": [{"type": "text", "text": f"Generated and playing: {clip_file}"}],
+            "structuredContent": {
+                "ok": True,
+                "job_id": job_id,
+                "idempotency_key": idem,
+                "clip_name": clip_name,
+                "clip_file": clip_file,
+                "clip_bytes": clip_bytes,
+                "frame_count": result_meta.get("frame_count"),
+                "fps": result_meta.get("fps"),
+                "auto_enable_fk": auto_enable_fk,
+                "play_response": play.response_json,
+            },
+            "isError": False,
+        }
 
     def _execute_voicevox_speakers(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Get list of available VOICEVOX speakers."""
@@ -1138,12 +1912,9 @@ class MCPProxyServer:
     def _handle_resource_read(self, request_id: Any, params: Dict[str, Any]) -> None:
         uri = params.get("uri")
         if uri == "vrm-proxy://instructions":
-            text = (
-                "Use `vrm_command` to proxy any VRM Agent Host HTTP endpoint. "
-                "Required fields: target, cmd. Optional: params (dict), method, "
-                "timeout, headers, json_payload, text_payload, absolute_url. "
-                "For sequential operations, call the `batch_vrm_commands` tool."
-            )
+            # initialize 応答の instructions と同じテキストを返す
+            # (Codex 実装後レビュー Minor 1 対応: contract 自己矛盾の解消)
+            text = self.instructions or INSTRUCTION_TEXT
         elif uri == "vrm-proxy://api-spec":
             # Read from instructions.md file (quick reference)
             script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1213,10 +1984,36 @@ def main() -> None:
         default_timeout=args.timeout,
         config=config,
     )
+
+    # Install process-lifecycle watchdogs (idle timeout + parent-death
+    # detection). Best-effort: if the module is missing or its startup
+    # fails we still want to serve requests, so the failure is logged
+    # and swallowed rather than aborting boot.
+    if _lifecycle is not None:
+        try:
+            _lifecycle.startup(config_file=args.config, base_url=base_url)
+        except Exception as exc:  # pragma: no cover - defensive
+            logging.warning("lifecycle.startup() failed: %s", exc)
+
     try:
         server.run_stdio_loop()
     except KeyboardInterrupt:
         logging.info("Interrupted by user, shutting down")
+        if _lifecycle is not None:
+            _lifecycle.shutdown("signal_int")
+    except SystemExit as exc:
+        if _lifecycle is not None:
+            _lifecycle.shutdown("system_exit", code=exc.code)
+        raise
+    except Exception as exc:  # pragma: no cover - top-level fatal
+        if _lifecycle is not None:
+            _lifecycle.shutdown(
+                "exception", type=type(exc).__name__, message=str(exc)
+            )
+        raise
+    else:
+        if _lifecycle is not None:
+            _lifecycle.shutdown("normal")
     finally:
         server.shutdown()
 

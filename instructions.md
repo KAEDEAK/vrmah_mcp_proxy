@@ -1,7 +1,6 @@
 # VRM Agent Host API クイックリファレンス
 
-本ドキュメントは基本的な操作コマンドのみを記載しています。
-詳細なパラメータや高度な機能については `vrm-proxy://api-spec-detailed` リソースを参照してください。
+本ドキュメントで基本操作の大半をカバーしています。ここに記載のないコマンドのみ `vrm-proxy://api-spec-detailed` を参照してください。
 
 ## http で直接制御する場合(mcpではない場合)
 待受ポート: `http://localhost:34560/` (または ユーザーが指定したサーバー・ポート)
@@ -282,16 +281,112 @@ voicevox_speakers ツールを使用
 
 ---
 
+## FK（Forward Kinematics）
+
+### 基本操作
+```
+?target=fk&cmd=enable&enable=true
+?target=fk&cmd=set&bone=Hips&rot=10,20,0
+?target=fk&cmd=get&bone=Hips&coord=global
+?target=fk&cmd=get_all&bones=main
+?target=fk&cmd=reset
+```
+
+### ボーンマスク（IK 併用時に有用）
+```
+?target=fk&cmd=set_mask&exclude=LeftUpperLeg,LeftLowerLeg,LeftFoot,RightUpperLeg,RightLowerLeg,RightFoot
+?target=fk&cmd=get_mask
+?target=fk&cmd=clear_mask
+```
+
+### FK アニメーションクリップ再生
+```
+?target=fk&cmd=play&file=ik-abcd1234.vrm.json&loop=n&speed=1.0&blend=0.25
+?target=fk&cmd=stop&reset=y
+?target=fk&cmd=animation&op=list_files
+?target=fk&cmd=animation&op=inspect&file=ik-abcd1234.vrm.json
+```
+
+`FK_FOLDER` 配下の VRM humanoid FK clip JSON (`vrm_humanoid_fk_major_v1` schema) を再生する。事前に `fk enable=true` を呼ぶ必要がある。
+
+### FK クリップアップロード (POST)
+```
+POST ?target=fk&cmd=upload_clip&name=ik-abcd1234
+Content-Type: application/json
+body: <FK clip JSON object>
+```
+
+VRM humanoid FK クリップを `FK_FOLDER/<name>.vrm.json` に保存する。`name` は `[A-Za-z0-9_-]{1,64}`、body サイズ上限 8 MB、重複は 409。`soma_to_vrm` 自動再生パイプライン (下記 `fk_generate_and_play`) から呼ばれる。
+
+### MCP Proxy ヘルパーツール（FK 用）
+
+VRM Agent Host API を組み合わせた高レベル操作。MCP ツールとして利用可能。
+
+| ツール | 概要 |
+|--------|------|
+| `fk_sample_pose` | アニメーション中に N 回サンプリングし、各ボーンの min/max/avg 統計を返す |
+| `fk_snapshot_to_frame` | 現在の FK ボーン回転を IK アニメーションフレームとして保存（rotation のみ） |
+| `fk_rotate_delta` | 指定ボーンに相対回転を加算（coord=global 対応） |
+| `fk_generate_and_play` | テキストから FK アニメーションを生成して再生 (soma_to_vrm 自動再生パイプライン) |
+
+- `bones` パラメータ: `"main"` で主要18ボーン、カンマ区切りボーン名（例: `"Hips,Spine,Head"`）で任意フィルタ、省略で全ボーン
+
+#### `fk_generate_and_play`
+
+1 回のツール呼び出しで「テキスト → soma_to_vrm 推論 → upload_clip → fk play」を完結する。
+
+入力 (`inputSchema`):
+
+| 名前 | 型 | 必須 | デフォルト | 範囲/制約 |
+|------|----|------|----------|----------|
+| `text` | string | YES | — | 1-2048 文字。動作のテキスト記述 |
+| `pose_type` | string | NO | `"T"` | `"T"` / `"A"` |
+| `loop` | boolean | NO | `false` | — |
+| `speed` | number | NO | `1.0` | 0.1-5.0 |
+| `blend` | number | NO | `0.25` | 0.0-5.0 (秒) |
+| `auto_enable_fk` | boolean | NO | `true` | `true` で `fk enable=true` を内部発行 |
+
+返り値 (`structuredContent`): `{ok, job_id, idempotency_key, clip_name, clip_file, clip_bytes, frame_count, fps, auto_enable_fk, play_response}`
+
+エラー時 `{ok:false, error, ...}` (HTTP status / `retry_after_ms` 等を含む場合あり)。
+
+挙動:
+- `idempotency_key = "ik-" + uuid16` を払い出し、soma_to_vrm の `POST /generate` へ submit
+- 同期完了 (200) なら poll をスキップ、202 なら `GET /jobs/<id>` を 3 秒 × 5 回 poll
+- transport failure のみ同一 `idempotency_key` で submit を最大 2 回再試行
+- poll 中の 4xx/500 は確定失敗として即中断 (5xx は破棄、4xx は status を返す)
+- 結果クリップを `GET /jobs/<id>/file` で取得し、`upload_clip` で VRM Agent Host へアップロード後、`fk enable` (任意) → `fk stop&reset=y` → `fk play` を発行
+
+設定: `config.json` に以下を追加:
+```json
+"soma_to_vrm": {
+  "host": "http://<ip-address-vrmah>:9571",
+  "candidates": ["http://localhost:9571"]
+}
+```
+
+---
+
+## IK（Inverse Kinematics）
+
+### 基本操作
+```
+?target=ik&cmd=enable&enable=true
+?target=ik&cmd=set&limb=LeftLeg&weight=1&enable=true
+?target=ik&cmd=get&limb=LeftLeg
+?target=ik&cmd=reset
+```
+
+### FK + IK 連携（上半身 FK + 脚 IK 固定）
+```
+1. fk enable&enable=true + ik enable&enable=true
+2. fk set_mask で脚ボーン除外
+3. ik set で両脚 weight=1
+4. fk set で上半身回転 → 脚は自動的にワールド位置を維持
+```
+
+---
+
 ## 詳細リファレンス
 
-以下の機能については `vrm-proxy://api-spec-detailed` リソースを参照:
-
-- Body Interaction（クリック/ドラッグ検知、Face Poke、SpringBone）
-- Body Partitioning（部位カスタム定義）
-- IK/FK 制御（四肢の位置/回転制御、アニメーション）
-- 瞬きの片目制御（blink_left/blink_right）
-- 画像オーバーレイ（image）
-- 重力・SpringBone 物理制御
-- Wing Menu 詳細設定（色、形状、ハイライト）
-- 設定ファイル（config.json）の詳細
-- Debug Telemetry / Debug Status
+上記で見つからないコマンド（Body Interaction, Body Partitioning, 画像オーバーレイ, 重力・SpringBone, Wing Menu 詳細設定, config.json 詳細, Debug 等）は `vrm-proxy://api-spec-detailed` を参照。

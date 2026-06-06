@@ -24,6 +24,11 @@ if sys.platform == "win32":
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="surrogateescape")
     sys.stdin  = io.TextIOWrapper(sys.stdin.buffer,  encoding="utf-8", errors="surrogateescape")
 
+try:
+    import _lifecycle  # type: ignore
+except Exception:  # pragma: no cover - lifecycle is optional, never fatal
+    _lifecycle = None  # type: ignore[assignment]
+
 # ---------------------------------------------------------------------------
 # Animation mappings
 # ---------------------------------------------------------------------------
@@ -351,29 +356,35 @@ class MinimumMcpServer:
                 self._error(msg.get("id"), -32603, f"Internal error: {exc}")
 
     def _handle(self, msg: Dict[str, Any]) -> None:
-        if "id" not in msg:
-            return  # notification, ignore
-        method = msg.get("method", "")
-        req_id = msg.get("id")
-        params = msg.get("params") or {}
+        if _lifecycle is not None:
+            _lifecycle.mark_request_start()
+        try:
+            if "id" not in msg:
+                return  # notification, ignore
+            method = msg.get("method", "")
+            req_id = msg.get("id")
+            params = msg.get("params") or {}
 
-        if method == "initialize":
-            self._result(req_id, {
-                "protocolVersion": params.get("protocolVersion", "2024-11-05"),
-                "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "vrm-minimum-proxy", "version": "0.1.0"},
-            })
-        elif method == "ping":
-            self._result(req_id, {})
-        elif method == "shutdown":
-            self._result(req_id, {})
-            self._running = False
-        elif method == "tools/list":
-            self._result(req_id, {"tools": self._tool_defs()})
-        elif method == "tools/call":
-            self._handle_tool_call(req_id, params)
-        else:
-            self._error(req_id, -32601, f"Method not found: {method}")
+            if method == "initialize":
+                self._result(req_id, {
+                    "protocolVersion": params.get("protocolVersion", "2024-11-05"),
+                    "capabilities": {"tools": {"listChanged": False}},
+                    "serverInfo": {"name": "vrm-minimum-proxy", "version": "0.1.0"},
+                })
+            elif method == "ping":
+                self._result(req_id, {})
+            elif method == "shutdown":
+                self._result(req_id, {})
+                self._running = False
+            elif method == "tools/list":
+                self._result(req_id, {"tools": self._tool_defs()})
+            elif method == "tools/call":
+                self._handle_tool_call(req_id, params)
+            else:
+                self._error(req_id, -32601, f"Method not found: {method}")
+        finally:
+            if _lifecycle is not None:
+                _lifecycle.mark_request_end()
 
     # --- Tool definitions --------------------------------------------------
 
@@ -463,10 +474,37 @@ class MinimumMcpServer:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    script_dir   = os.path.dirname(os.path.abspath(__file__))
+    config_file  = os.path.join(script_dir, "config.json")
     config       = _load_config()
     vrmah        = VrmahClient.from_config(config)
     voicevox_cfg = VoicevoxConfig.from_config(config)
-    MinimumMcpServer(vrmah=vrmah, voicevox_cfg=voicevox_cfg).run()
+    server       = MinimumMcpServer(vrmah=vrmah, voicevox_cfg=voicevox_cfg)
+
+    if _lifecycle is not None:
+        try:
+            _lifecycle.startup(config_file=config_file, base_url=vrmah.base_url)
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"lifecycle.startup() failed: {exc}", file=sys.stderr)
+
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        if _lifecycle is not None:
+            _lifecycle.shutdown("signal_int")
+    except SystemExit as exc:
+        if _lifecycle is not None:
+            _lifecycle.shutdown("system_exit", code=exc.code)
+        raise
+    except Exception as exc:
+        if _lifecycle is not None:
+            _lifecycle.shutdown(
+                "exception", type=type(exc).__name__, message=str(exc)
+            )
+        raise
+    else:
+        if _lifecycle is not None:
+            _lifecycle.shutdown("normal")
 
 
 if __name__ == "__main__":

@@ -1,13 +1,17 @@
 {
   "version":2.0,
   "vrmah": {
-    "host":"http://<ip-address-vrmah>:34560", 
+    "host":"http://<ip-address-vrmah>:34560",
     "candidates":["http://<ip-address-vrmah-candidate>:34560"]
+  },
+  "soma_to_vrm": {
+    "host":"http://<ip-address-vrmah>:9571",
+    "candidates":["http://localhost:9571","http://<ip-address-vrmah-candidate>:9571"]
   },
   "voice": {
     "type": "voicebox",
-    "server": "http://<ip-address-voicevox>:50021",
-    "candidates":["http://<ip-address-voicevox-candidate>:50021"],
+    "server": "http://<ip-address-voicevox-candidate>:50021",
+    "candidates":["http://<ip-address-voicevox>:50021","http://<ip-address-vrmah>:50021"],
     "name": "櫻歌ミコ",
     "speaker_uuid": "0693554c-338e-4790-8982-b9c6d476dc69",
     "style_id": 43,
