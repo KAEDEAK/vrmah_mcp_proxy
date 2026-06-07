@@ -9,6 +9,7 @@ Tools:
 """
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import os
@@ -22,8 +23,11 @@ import requests
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="surrogateescape")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="surrogateescape")
-    sys.stdin  = io.TextIOWrapper(sys.stdin.buffer,  encoding="utf-8", errors="surrogateescape")
+    sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="surrogateescape")
 
+# Side-by-side lifecycle module. It is best-effort: minimum proxy should
+# still run if this file is unavailable, but when present it provides the
+# same Codex Desktop transport handling as the full proxy.
 try:
     import _lifecycle  # type: ignore
 except Exception:  # pragma: no cover - lifecycle is optional, never fatal
@@ -115,9 +119,15 @@ def _is_retryable(exc: Exception) -> bool:
 # Config
 # ---------------------------------------------------------------------------
 
-def _load_config() -> Dict[str, Any]:
+def _config_path(config_file: str) -> str:
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = os.path.join(script_dir, "config.json")
+    if os.path.isabs(config_file):
+        return config_file
+    return os.path.join(script_dir, config_file)
+
+
+def _load_config(config_file: str = "config.json") -> Dict[str, Any]:
+    config_path = _config_path(config_file)
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -289,13 +299,22 @@ class MinimumMcpServer:
 
     def _write_message(self, msg: Dict[str, Any]) -> None:
         payload = json.dumps(msg, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        if self._framing == "ndjson":
-            sys.stdout.buffer.write(payload + b"\n")
-        else:
-            sys.stdout.buffer.write(
-                f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii") + payload
-            )
-        sys.stdout.buffer.flush()
+        try:
+            if self._framing == "ndjson":
+                sys.stdout.buffer.write(payload + b"\n")
+            else:
+                sys.stdout.buffer.write(
+                    f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii") + payload
+                )
+            sys.stdout.buffer.flush()
+        except Exception as exc:
+            if _lifecycle is not None:
+                _lifecycle.log_event(
+                    "stdout_write_failed",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+            raise
 
     def _read_message(self) -> Optional[Dict[str, Any]]:
         first_line = sys.stdin.buffer.readline()
@@ -328,8 +347,14 @@ class MinimumMcpServer:
                 k, v = text.split(":", 1)
                 headers[k.strip().lower()] = v.strip()
 
-        length = int(headers.get("content-length", 0))
+        if "content-length" not in headers:
+            raise ValueError("Missing Content-Length header")
+        length = int(headers["content-length"])
+        if length < 0:
+            raise ValueError("Negative Content-Length")
         body = sys.stdin.buffer.read(length)
+        if body is None or len(body) != length:
+            raise ValueError("Unexpected EOF while reading message body")
         return json.loads(body.decode("utf-8"))
 
     def _result(self, req_id: Any, result: Any) -> None:
@@ -349,6 +374,8 @@ class MinimumMcpServer:
                 self._error(None, -32700, f"Read error: {exc}")
                 continue
             if msg is None:
+                if _lifecycle is not None:
+                    _lifecycle.handle_stdin_eof()
                 break
             try:
                 self._handle(msg)
@@ -473,12 +500,59 @@ class MinimumMcpServer:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Minimum VRM MCP proxy server")
+    parser.add_argument(
+        "--config",
+        default=os.environ.get("VRM_MCP_CONFIG", "config.json"),
+        help="Config filename in the mcp_proxy directory (default: config.json)",
+    )
+    parser.add_argument(
+        "--lifecycle-inspect",
+        action="store_true",
+        help="Print lifecycle registry state as JSON and exit",
+    )
+    parser.add_argument(
+        "--lifecycle-prune",
+        action="store_true",
+        help="Prune dead lifecycle registry entries, print JSON, and exit",
+    )
+    parser.add_argument(
+        "--lifecycle-print-identity",
+        action="store_true",
+        help="Print this process lifecycle identity as JSON and exit",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    script_dir   = os.path.dirname(os.path.abspath(__file__))
-    config_file  = os.path.join(script_dir, "config.json")
-    config       = _load_config()
+    args = parse_args()
+    config_file = args.config
+    config = _load_config(config_file)
     vrmah        = VrmahClient.from_config(config)
     voicevox_cfg = VoicevoxConfig.from_config(config)
+
+    if (
+        args.lifecycle_inspect
+        or args.lifecycle_prune
+        or args.lifecycle_print_identity
+    ):
+        if _lifecycle is None:
+            print(json.dumps({"error": "lifecycle_unavailable"}, indent=2))
+            return
+        payload: Dict[str, Any] = {}
+        if args.lifecycle_print_identity:
+            payload["current"] = _lifecycle.describe_current(
+                config_file=config_file,
+                base_url=vrmah.base_url,
+            )
+        if args.lifecycle_inspect or args.lifecycle_prune:
+            payload["registry"] = _lifecycle.inspect_registry(
+                prune=args.lifecycle_prune
+            )
+        print(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True))
+        return
+
     server       = MinimumMcpServer(vrmah=vrmah, voicevox_cfg=voicevox_cfg)
 
     if _lifecycle is not None:
