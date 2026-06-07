@@ -13,9 +13,12 @@ the tool handle. The next tool call then failed with ``Transport closed``
 instead of spawning a replacement process.
 
 This version keeps the current transport alive by default and moves
-cleanup to startup: a new proxy generation registers itself and
-supersedes older running entries that share the same client/config key.
-The hard idle timeout still exists as an explicit opt-in escape hatch.
+cleanup to startup: a new proxy generation registers itself and may
+supersede older running entries that share the same client/config key.
+Codex Desktop app-server transports are not superseded by default,
+because killing a live stdio child can leave Codex holding a closed
+tool handle. The hard idle timeout still exists as an explicit opt-in
+escape hatch.
 
 Three watchdogs are installed by ``startup()`` as daemon threads:
 
@@ -47,6 +50,10 @@ Environment knobs:
 - ``VRMAH_PARENT_WATCH_SEC``   : default 30;  set 0 to disable.
 - ``VRMAH_NATIVE_PARENT_WAIT`` : default 1;   set 0 to disable.
 - ``VRMAH_SUPERSEDE_OLDER``    : default 1;   set 0 to disable.
+- ``VRMAH_CODEX_APP_SERVER_SUPERSEDE``:
+                                  default 0; set 1 to let Codex Desktop
+                                  app-server instances supersede older
+                                  app-server instances.
 - ``VRMAH_SUPERSEDE_GRACE_SEC``: default 5.0.
 - ``VRMAH_INSTANCE_REGISTRY``  : optional registry path override.
 - ``VRMAH_LIFECYCLE_LOG``      : default 1;   set 0 to silence logs.
@@ -62,6 +69,7 @@ import os
 import sys
 import threading
 import time
+import atexit
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -79,8 +87,14 @@ else:  # pragma: no cover - POSIX only
     import select
 
 
-_REGISTRY_VERSION = 1
+_REGISTRY_VERSION = 2
 _DEFAULT_REGISTRY_PATH = Path(__file__).with_name("instance_registry.json")
+_DEFAULT_EVENT_LOG_PATH = Path(__file__).with_name("lifecycle_events.jsonl")
+_CODEX_APP_SERVER = "codex-app-server"
+_CODEX_EXEC = "codex-exec"
+_CODEX_GENERIC = "codex"
+_event_log_lock = threading.Lock()
+_atexit_registered = False
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +181,44 @@ def _registry_path() -> Path:
     if raw:
         return Path(raw)
     return _DEFAULT_REGISTRY_PATH
+
+
+def _event_log_path() -> Path:
+    raw = os.environ.get("VRMAH_LIFECYCLE_EVENT_LOG")
+    if raw:
+        return Path(raw)
+    return _DEFAULT_EVENT_LOG_PATH
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    return str(value)
+
+
+def _append_event_log(event: str, **fields: Any) -> None:
+    if not _env_flag("VRMAH_LIFECYCLE_FILE_LOG", 1):
+        return
+    path = _event_log_path()
+    record = {
+        "ts": _isoformat_utc(_utc_now()),
+        "event": event,
+    }
+    record.update({str(k): _json_safe(v) for k, v in fields.items()})
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(record, ensure_ascii=True, sort_keys=True)
+        with _event_log_lock:
+            with path.open("a", encoding="utf-8", newline="\n") as fh:
+                fh.write(line)
+                fh.write("\n")
+                fh.flush()
+    except Exception:
+        pass
 
 
 def _default_registry_doc() -> dict:
@@ -297,23 +349,53 @@ def _mutate_registry(mutator: Callable[[List[dict]], Tuple[List[dict], Any]]) ->
         return result
 
 
+def _process_command_parts(proc: Any) -> List[str]:
+    parts = [str(proc.name())]
+    try:
+        parts.extend(str(part) for part in proc.cmdline())
+    except Exception:
+        pass
+    return parts
+
+
+def _normalize_cmd_part(part: str) -> str:
+    return part.strip().strip("\"'").lower()
+
+
+def _classify_codex_parts(parts: List[str]) -> str:
+    normalized = [_normalize_cmd_part(part) for part in parts if str(part).strip()]
+    if "app-server" in normalized:
+        return _CODEX_APP_SERVER
+    if "exec" in normalized:
+        return _CODEX_EXEC
+
+    # Some launchers expose the whole command line as one item.
+    blob = " ".join(normalized)
+    padded = f" {blob} "
+    if " app-server " in padded:
+        return _CODEX_APP_SERVER
+    if " exec " in padded:
+        return _CODEX_EXEC
+    return _CODEX_GENERIC
+
+
 def _detect_host_kind(initial_ppid: int) -> str:
     if psutil is None:
         return "unknown"
     pid: Optional[int] = initial_ppid
-    for _ in range(6):
+    saw_codex = False
+    for _ in range(12):
         if pid is None or pid <= 0:
             break
         try:
             proc = psutil.Process(pid)
-            parts = [proc.name()]
-            try:
-                parts.extend(proc.cmdline())
-            except Exception:
-                pass
+            parts = _process_command_parts(proc)
             blob = " ".join(str(part).lower() for part in parts)
             if "codex" in blob:
-                return "codex"
+                kind = _classify_codex_parts(parts)
+                if kind != _CODEX_GENERIC:
+                    return kind
+                saw_codex = True
             if "claude" in blob:
                 return "claude"
             if "code.exe" in blob or "visual studio code" in blob or "vscode" in blob:
@@ -321,7 +403,53 @@ def _detect_host_kind(initial_ppid: int) -> str:
             pid = proc.ppid()
         except Exception:
             break
+    if saw_codex:
+        return _CODEX_GENERIC
     return "unknown"
+
+
+def _effective_entry_host_kind(entry: dict) -> str:
+    host_kind = str(entry.get("host_kind", ""))
+    if host_kind != _CODEX_GENERIC:
+        return host_kind
+    ppid = _as_int(entry.get("ppid"))
+    if ppid is None or ppid <= 0:
+        return host_kind
+    refined = _detect_host_kind(ppid)
+    if refined in (_CODEX_APP_SERVER, _CODEX_EXEC):
+        return refined
+    return host_kind
+
+
+def _decorate_registry_instance(entry: dict) -> dict:
+    item = dict(entry)
+    item["live"] = _instance_is_live(entry)
+    item["effective_host_kind"] = _effective_entry_host_kind(entry)
+    return item
+
+
+def inspect_registry(prune: bool = False) -> dict:
+    path = _registry_path()
+    with _registry_lock(path):
+        doc = _read_registry_unlocked(path)
+        raw_instances = [
+            entry for entry in doc.get("instances", []) if isinstance(entry, dict)
+        ]
+        before_count = len(raw_instances)
+        instances = _prune_dead_instances(raw_instances) if prune else raw_instances
+        if prune:
+            _write_registry_unlocked(
+                path,
+                {"version": _REGISTRY_VERSION, "instances": _sorted_instances(instances)},
+            )
+        decorated = [_decorate_registry_instance(entry) for entry in instances]
+    return {
+        "version": _REGISTRY_VERSION,
+        "path": str(path),
+        "pruned": prune,
+        "removed": before_count - len(instances),
+        "instances": _sorted_instances(decorated),
+    }
 
 
 def _config_arg_from_argv() -> str:
@@ -443,6 +571,12 @@ class _NoOpContext:
     def shutdown(self, reason: str, **extra: Any) -> bool:
         return False
 
+    def handle_stdin_eof(self) -> None:
+        return None
+
+    def log_event(self, event: str, **extra: Any) -> None:
+        return None
+
 
 class LifecycleContext:
     def __init__(self, config_file: str = "", base_url: str = "") -> None:
@@ -452,8 +586,12 @@ class LifecycleContext:
             _env_flag("VRMAH_NATIVE_PARENT_WAIT", 1)
         )
         self._supersede_enabled = bool(_env_flag("VRMAH_SUPERSEDE_OLDER", 1))
+        self._codex_app_server_supersede_enabled = bool(
+            _env_flag("VRMAH_CODEX_APP_SERVER_SUPERSEDE", 0)
+        )
         self._supersede_grace_sec = _env_float("VRMAH_SUPERSEDE_GRACE_SEC", 5.0)
         self._lifecycle_log_enabled = bool(_env_flag("VRMAH_LIFECYCLE_LOG", 1))
+        self._stdin_eof_grace_sec = _env_float("VRMAH_STDIN_EOF_GRACE_SEC", 0.0)
         self._poll_interval = _derive_poll_interval(
             self._hard_idle_sec,
             os.environ.get("VRMAH_PROC_IDLE_POLL_SEC"),
@@ -497,12 +635,26 @@ class LifecycleContext:
                 # Restart the idle clock the moment we drop back to zero.
                 self._last_idle_at = time.monotonic()
 
+    def log_event(self, event: str, **extra: Any) -> None:
+        fields = {
+            "pid": self._pid,
+            "ppid": self._initial_ppid,
+            "host_kind": self._host_kind,
+            "script_file": self._script_file,
+            "config_file": self._config_file,
+            "base_url": self._base_url,
+            "cwd": self._cwd,
+        }
+        fields.update(extra)
+        _append_event_log(event, **fields)
+
     def shutdown(self, reason: str, **extra: Any) -> bool:
         with self._lock:
             if self._shutdown_emitted:
                 return False
             self._shutdown_emitted = True
         self._mark_instance_stopped(reason)
+        self.log_event("shutdown", reason=reason, **extra)
         if self._lifecycle_log_enabled:
             parts = [
                 "event=shutdown",
@@ -517,6 +669,24 @@ class LifecycleContext:
             except Exception:
                 pass
         return True
+
+    def handle_stdin_eof(self) -> None:
+        grace_sec = self._stdin_eof_grace_sec
+        if self._host_kind == _CODEX_APP_SERVER:
+            grace_sec = _env_float("VRMAH_CODEX_STDIN_EOF_GRACE_SEC", 300.0)
+        self.log_event("stdin_eof", grace_sec=grace_sec)
+        if grace_sec <= 0:
+            self.shutdown("stdin_eof")
+            return
+
+        deadline = time.monotonic() + grace_sec
+        while not self._stop_event.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if self._stop_event.wait(min(1.0, remaining)):
+                return
+        self.shutdown("stdin_eof_grace_elapsed", grace_sec=grace_sec)
 
     def close(self) -> None:
         """Stop watchdog threads. Idempotent. Test-only."""
@@ -533,6 +703,7 @@ class LifecycleContext:
 
     def register_instance(self) -> None:
         superseded_pids = _mutate_registry(self._register_instance_mutation)
+        self.log_event("registered", superseded_pids=superseded_pids)
         if self._supersede_enabled and superseded_pids:
             self._terminate_superseded(superseded_pids)
 
@@ -556,6 +727,17 @@ class LifecycleContext:
             f"native_parent_wait={native_wait} "
             f"supersede_older={int(self._supersede_enabled)}\n"
         )
+        self.log_event(
+            "startup",
+            hard_idle_sec=self._hard_idle_sec,
+            parent_watch_sec=self._parent_watch_sec,
+            native_parent_wait=native_wait,
+            supersede_older=int(self._supersede_enabled),
+            codex_app_server_supersede=int(
+                self._codex_app_server_supersede_enabled
+            ),
+            stdin_eof_grace_sec=self._stdin_eof_grace_sec,
+        )
         try:
             sys.stderr.flush()
         except Exception:
@@ -563,17 +745,17 @@ class LifecycleContext:
 
     # ----- registry -----
 
-    def _identity(self) -> Tuple[str, str, str, str, str]:
+    def _identity(self) -> Tuple[str, str, str, str]:
         return (
             self._host_kind,
             self._script_file,
             self._config_file,
             self._base_url,
-            self._cwd,
         )
 
     def _instance_record(self) -> dict:
         return {
+            "identity_version": _REGISTRY_VERSION,
             "pid": self._pid,
             "ppid": self._initial_ppid,
             "pid_create_time": self._pid_create_time,
@@ -598,13 +780,12 @@ class LifecycleContext:
             return True
         return expected == self._pid_create_time
 
-    def _entry_identity(self, entry: dict) -> Tuple[str, str, str, str, str]:
+    def _entry_identity(self, entry: dict) -> Tuple[str, str, str, str]:
         return (
-            str(entry.get("host_kind", "")),
+            _effective_entry_host_kind(entry),
             str(entry.get("script_file", "")),
             str(entry.get("config_file", "")),
             str(entry.get("base_url", "")),
-            str(entry.get("cwd", "")),
         )
 
     def _register_instance_mutation(self, instances: List[dict]) -> Tuple[List[dict], List[int]]:
@@ -655,6 +836,11 @@ class LifecycleContext:
         _mutate_registry(mutate)
 
     def _is_supersession_candidate(self, entry: dict) -> bool:
+        if (
+            self._host_kind == _CODEX_APP_SERVER
+            and not self._codex_app_server_supersede_enabled
+        ):
+            return False
         if entry.get("status") != "running":
             return False
         pid = _as_int(entry.get("pid"))
@@ -679,6 +865,7 @@ class LifecycleContext:
                 continue
             except Exception:
                 continue
+            self.log_event("supersede_terminate", target_pid=pid)
             if self._lifecycle_log_enabled:
                 sys.stderr.write(
                     "[vrmah-proxy lifecycle] "
@@ -697,6 +884,7 @@ class LifecycleContext:
                 proc.wait(timeout=3.0)
             except psutil.TimeoutExpired:
                 try:
+                    self.log_event("supersede_kill", target_pid=pid)
                     proc.kill()
                 except Exception:
                     pass
@@ -746,6 +934,7 @@ class LifecycleContext:
             if elapsed < self._hard_idle_sec:
                 continue
             if self.shutdown("hard_idle_timeout", elapsed_sec=int(elapsed)):
+                self.log_event("os_exit", reason="hard_idle_timeout")
                 os._exit(0)
             return
 
@@ -765,6 +954,7 @@ class LifecycleContext:
                     pass
                 if not running or status == getattr(psutil, "STATUS_ZOMBIE", "zombie"):
                     if self.shutdown("parent_gone", ppid=self._initial_ppid):
+                        self.log_event("os_exit", reason="parent_gone")
                         os._exit(0)
                     return
                 if self._initial_ppid_create_time is not None and (
@@ -775,10 +965,16 @@ class LifecycleContext:
                         ppid=self._initial_ppid,
                         detail="ppid_reused",
                     ):
+                        self.log_event(
+                            "os_exit",
+                            reason="parent_gone",
+                            detail="ppid_reused",
+                        )
                         os._exit(0)
                     return
             except psutil.NoSuchProcess:
                 if self.shutdown("parent_gone", ppid=self._initial_ppid):
+                    self.log_event("os_exit", reason="parent_gone")
                     os._exit(0)
                 return
             except Exception:
@@ -796,6 +992,7 @@ class LifecycleContext:
             ppid=self._initial_ppid,
             detail="native_wait",
         ):
+            self.log_event("os_exit", reason="parent_gone", detail="native_wait")
             os._exit(0)
 
 
@@ -807,11 +1004,39 @@ class LifecycleContext:
 _ctx: Any = _NoOpContext()
 
 
+def _atexit_shutdown() -> None:
+    if isinstance(_ctx, LifecycleContext):
+        _ctx.shutdown("atexit_unclassified")
+
+
+def describe_current(config_file: str = "", base_url: str = "") -> dict:
+    ctx = LifecycleContext(config_file=config_file, base_url=base_url)
+    return {
+        "pid": ctx._pid,
+        "ppid": ctx._initial_ppid,
+        "host_kind": ctx._host_kind,
+        "script_file": ctx._script_file,
+        "config_file": ctx._config_file,
+        "base_url": ctx._base_url,
+        "cwd": ctx._cwd,
+        "identity": list(ctx._identity()),
+        "identity_fields": [
+            "host_kind",
+            "script_file",
+            "config_file",
+            "base_url",
+        ],
+    }
+
+
 def startup(config_file: str = "", base_url: str = "") -> LifecycleContext:
     """Install a real lifecycle context, log startup, start watchdogs."""
-    global _ctx
+    global _ctx, _atexit_registered
     ctx = LifecycleContext(config_file=config_file, base_url=base_url)
     _ctx = ctx
+    if not _atexit_registered:
+        atexit.register(_atexit_shutdown)
+        _atexit_registered = True
     ctx.register_instance()
     ctx._emit_startup()
     ctx.start_watchdogs()
@@ -828,6 +1053,14 @@ def mark_request_end() -> None:
 
 def shutdown(reason: str, **extra: Any) -> bool:
     return _ctx.shutdown(reason, **extra)
+
+
+def handle_stdin_eof() -> None:
+    _ctx.handle_stdin_eof()
+
+
+def log_event(event: str, **extra: Any) -> None:
+    _ctx.log_event(event, **extra)
 
 
 def reset_to_noop_for_test() -> None:

@@ -605,13 +605,22 @@ class MCPProxyServer:
 
     def _write_message(self, message: Dict[str, Any]) -> None:
         payload = _json_dumps(message).encode("utf-8")
-        if self._framing == "ndjson":
-            sys.stdout.buffer.write(payload + b"\n")
-        else:
-            header = f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
-            sys.stdout.buffer.write(header)
-            sys.stdout.buffer.write(payload)
-        sys.stdout.buffer.flush()
+        try:
+            if self._framing == "ndjson":
+                sys.stdout.buffer.write(payload + b"\n")
+            else:
+                header = f"Content-Length: {len(payload)}\r\n\r\n".encode("ascii")
+                sys.stdout.buffer.write(header)
+                sys.stdout.buffer.write(payload)
+            sys.stdout.buffer.flush()
+        except Exception as exc:
+            if _lifecycle is not None:
+                _lifecycle.log_event(
+                    "stdout_write_failed",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+            raise
 
     def _read_message(self) -> Optional[Dict[str, Any]]:
         # Read the first line to determine framing mode
@@ -708,6 +717,9 @@ class MCPProxyServer:
                 continue
 
             if message is None:
+                logging.info("MCP stdio input reached EOF")
+                if _lifecycle is not None:
+                    _lifecycle.handle_stdin_eof()
                 break
             try:
                 self._handle_message(message)
@@ -1957,6 +1969,21 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("VRM_MCP_CONFIG", "config.json"),
         help="Config filename in the mcp_proxy directory (default: config.json)",
     )
+    parser.add_argument(
+        "--lifecycle-inspect",
+        action="store_true",
+        help="Print lifecycle registry state as JSON and exit",
+    )
+    parser.add_argument(
+        "--lifecycle-prune",
+        action="store_true",
+        help="Prune dead lifecycle registry entries, print JSON, and exit",
+    )
+    parser.add_argument(
+        "--lifecycle-print-identity",
+        action="store_true",
+        help="Print this process lifecycle identity as JSON and exit",
+    )
     return parser.parse_args()
 
 
@@ -1977,6 +2004,27 @@ def main() -> None:
     logging.info("VRM Agent Host URL: %s", base_url)
     if vrmah_candidates:
         logging.info("VRM fallback candidates: %s", ", ".join(vrmah_candidates))
+
+    if (
+        args.lifecycle_inspect
+        or args.lifecycle_prune
+        or args.lifecycle_print_identity
+    ):
+        if _lifecycle is None:
+            print(json.dumps({"error": "lifecycle_unavailable"}, indent=2))
+            return
+        payload: Dict[str, Any] = {}
+        if args.lifecycle_print_identity:
+            payload["current"] = _lifecycle.describe_current(
+                config_file=args.config,
+                base_url=base_url,
+            )
+        if args.lifecycle_inspect or args.lifecycle_prune:
+            payload["registry"] = _lifecycle.inspect_registry(
+                prune=args.lifecycle_prune
+            )
+        print(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True))
+        return
 
     server = MCPProxyServer(
         base_url,
