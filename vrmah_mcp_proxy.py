@@ -24,7 +24,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import requests
@@ -1520,7 +1520,6 @@ class MCPProxyServer:
         speed_scale = args.get("speed_scale", 1.0)
         volume_scale = args.get("volume_scale", 1.0)
 
-        import traceback
         step = "init"
         audio_size = 0
         try:
@@ -1573,10 +1572,6 @@ class MCPProxyServer:
                 }
 
         except Exception as e:
-            # Get traceback info
-            tb_lines = traceback.format_exc().split('\n')
-            # Keep only last few lines to avoid encoding issues
-            tb_short = '\n'.join(tb_lines[-5:]) if len(tb_lines) > 5 else '\n'.join(tb_lines)
             # Safely convert error to ASCII
             try:
                 error_str = str(e).encode('ascii', 'replace').decode('ascii')
@@ -1689,7 +1684,7 @@ class MCPProxyServer:
             except ValueError:
                 pass
             return _err(
-                f"soma_to_vrm queue full (HTTP 429)",
+                "soma_to_vrm queue full (HTTP 429)",
                 idempotency_key=idem,
                 http_status=429,
                 retry_after_ms=retry_after_ms,
@@ -1755,7 +1750,7 @@ class MCPProxyServer:
                     )
                 # queued / running -> next poll
             if not is_done:
-                return _err(f"soma job poll timeout (150s)", job_id=job_id)
+                return _err("soma job poll timeout (150s)", job_id=job_id)
 
         # 3) fetch result file
         try:
